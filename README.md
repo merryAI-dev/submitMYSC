@@ -1,13 +1,6 @@
 # submitMYSC
 
-Public entry shell for the MYSC payment evidence submission surface.
-
-The production domain stays intentionally narrow:
-
-- `/` serves a lightweight public shell.
-- `/payment-evidence/submit/:token` rewrites to the inner-platform submission UI.
-- `/api/public/*` rewrites to the inner-platform BFF public API.
-- `/assets/*` rewrites to inner-platform build assets for the proxied submission UI.
+Initial deployment shell for the MYSC payment evidence submission surface.
 
 ## Local Preview
 
