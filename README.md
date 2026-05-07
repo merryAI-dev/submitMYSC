@@ -45,6 +45,11 @@ Current project setup:
 submitMYSC Drive uploads use the same isolated BFF service account.
 
 - Service account: `submit-mysc-bff@submit-mysc-20260507.iam.gserviceaccount.com`
+- Shared Drive ID: `0AKK1hZvoh4gCUk9PVA`
+- Evidence root folder ID: `1ojv7OSbG-Or3W6vdwvd7-f4ab6qkwOMt`
+- Evidence root URL: `https://drive.google.com/drive/folders/1ojv7OSbG-Or3W6vdwvd7-f4ab6qkwOMt`
+- Evidence ledger spreadsheet ID: `1JLfW7Mc3NssrS6iv7agk4KtatmuvXX-0M6PRpMRJvNo`
+- Evidence ledger URL: `https://docs.google.com/spreadsheets/d/1JLfW7Mc3NssrS6iv7agk4KtatmuvXX-0M6PRpMRJvNo/edit`
 
 For production uploads, add the service account to the target MYSC Shared Drive as a Content manager, create/select a folder inside that Shared Drive, then set both `GOOGLE_DRIVE_SHARED_DRIVE_ID` and `GOOGLE_DRIVE_EVIDENCE_ROOT_FOLDER_ID`. A regular My Drive folder shared with the service account is not enough: service accounts do not have usable My Drive storage quota for uploaded evidence files or Sheets.
 
