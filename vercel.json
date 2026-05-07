@@ -1,0 +1,47 @@
+{
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/bff.js": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/v1",
+      "destination": "/api/bff?__path=/api/v1"
+    },
+    {
+      "source": "/api/v1/:path*",
+      "destination": "/api/bff?__path=/api/v1/:path*"
+    },
+    {
+      "source": "/api/public",
+      "destination": "/api/bff?__path=/api/public"
+    },
+    {
+      "source": "/api/public/:path*",
+      "destination": "/api/bff?__path=/api/public/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
+  ]
+}
