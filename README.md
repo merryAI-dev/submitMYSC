@@ -33,6 +33,22 @@ submitMYSC must use its own Firebase project:
 
 Do not point this app at `mysc-bmp-14173451` or any `inner-platform-*` Firebase project. Those are separate production data stores.
 
+Current project setup:
+
+- Firestore `(default)` database: `asia-northeast3`, delete protection enabled
+- Firestore rules: deny all client reads/writes; BFF uses Admin SDK
+- BFF service account: `submit-mysc-bff@submit-mysc-20260507.iam.gserviceaccount.com`
+- local service account key path: `/Users/boram/.codex/secrets/submitMYSC/submit-mysc-bff-service-account.json`
+
+## Google Drive
+
+submitMYSC Drive uploads use the same isolated BFF service account.
+
+- Drive root folder ID: `1BFMoZFl6bRvDp-uGFVnk0lCrrRJaePJ5`
+- Drive root URL: `https://drive.google.com/drive/folders/1BFMoZFl6bRvDp-uGFVnk0lCrrRJaePJ5`
+
+For production uploads, add `submit-mysc-bff@submit-mysc-20260507.iam.gserviceaccount.com` to the target MYSC Shared Drive as a Content manager, then set `GOOGLE_DRIVE_SHARED_DRIVE_ID`. Service-account My Drive has no usable storage quota for Sheets/files.
+
 ## Deploy
 
 The Vercel project serves Vite static output and rewrites `/api/*` to `api/bff.js`.
@@ -46,8 +62,10 @@ Required production env:
 - Cloudflare Turnstile site and secret keys
 - `VITE_SUBMIT_MYSC_ADMIN_EMAILS` and `BFF_SUBMIT_MYSC_ADMIN_EMAILS`
 
-Firestore/Auth API activation is still required for the new project. If `gcloud services enable` returns permission denied, ask a Google Cloud org admin to enable:
+Enabled APIs:
 
+- `firebase.googleapis.com`
 - `firestore.googleapis.com`
 - `identitytoolkit.googleapis.com`
-- `firebase.googleapis.com`
+- `drive.googleapis.com`
+- `sheets.googleapis.com`
