@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/payment-evidence/submit/:token",
+      "destination": "https://inner-platform.vercel.app/payment-evidence/submit/:token"
+    },
+    {
+      "source": "/api/public",
+      "destination": "https://inner-platform.vercel.app/api/public"
+    },
+    {
+      "source": "/api/public/:path*",
+      "destination": "https://inner-platform.vercel.app/api/public/:path*"
+    },
+    {
+      "source": "/assets/:path*",
+      "destination": "https://inner-platform.vercel.app/assets/:path*"
+    }
+  ]
+}
