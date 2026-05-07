@@ -44,10 +44,9 @@ Current project setup:
 
 submitMYSC Drive uploads use the same isolated BFF service account.
 
-- Drive root folder ID: `1BFMoZFl6bRvDp-uGFVnk0lCrrRJaePJ5`
-- Drive root URL: `https://drive.google.com/drive/folders/1BFMoZFl6bRvDp-uGFVnk0lCrrRJaePJ5`
+- Service account: `submit-mysc-bff@submit-mysc-20260507.iam.gserviceaccount.com`
 
-For production uploads, add `submit-mysc-bff@submit-mysc-20260507.iam.gserviceaccount.com` to the target MYSC Shared Drive as a Content manager, then set `GOOGLE_DRIVE_SHARED_DRIVE_ID`. Service-account My Drive has no usable storage quota for Sheets/files.
+For production uploads, add the service account to the target MYSC Shared Drive as a Content manager, create/select a folder inside that Shared Drive, then set both `GOOGLE_DRIVE_SHARED_DRIVE_ID` and `GOOGLE_DRIVE_EVIDENCE_ROOT_FOLDER_ID`. A regular My Drive folder shared with the service account is not enough: service accounts do not have usable My Drive storage quota for uploaded evidence files or Sheets.
 
 ## Deploy
 
