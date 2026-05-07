@@ -12,6 +12,12 @@ import { buildTenantScopedPath, resolveTenantId } from '../platform/tenant';
 import { getAllowedEmailDomains } from '../platform/email-allowlist';
 
 const STORAGE_KEY = 'MYSC_FIREBASE_CONFIG';
+const SUBMIT_MYSC_FIREBASE_PROJECT_ID = 'submit-mysc-20260507';
+const FORBIDDEN_FIREBASE_PROJECT_IDS = new Set([
+  'mysc-bmp-14173451',
+  'inner-platform-live-20260316',
+  'inner-platform-qa-20260310',
+]);
 
 export interface FirebaseConfig {
   apiKey: string;
@@ -100,12 +106,24 @@ export function clearConfig(): void {
 }
 
 export function isConfigValid(cfg: FirebaseConfig | null): cfg is FirebaseConfig {
-  return !!(
+  if (!(
     cfg &&
     normalizeString(cfg.apiKey) &&
     normalizeString(cfg.projectId) &&
     normalizeString(cfg.authDomain)
-  );
+  )) {
+    return false;
+  }
+
+  const projectId = normalizeString(cfg.projectId);
+  if (FORBIDDEN_FIREBASE_PROJECT_IDS.has(projectId)) {
+    throw new Error(`Refusing to use non-submitMYSC Firebase project: ${projectId}`);
+  }
+  if (projectId !== SUBMIT_MYSC_FIREBASE_PROJECT_ID) {
+    throw new Error(`submitMYSC must use Firebase project ${SUBMIT_MYSC_FIREBASE_PROJECT_ID}, got ${projectId}`);
+  }
+
+  return true;
 }
 
 export function selectFirebaseConfig(

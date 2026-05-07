@@ -23,6 +23,16 @@ npm run bff:dev
 
 Copy `.env.example` to the active environment provider and fill Firebase, Google Drive, and Cloudflare Turnstile values before using the real pipeline.
 
+## Firebase Isolation
+
+submitMYSC must use its own Firebase project:
+
+- project ID: `submit-mysc-20260507`
+- project number: `391150252419`
+- Web app ID: `1:391150252419:web:9580f04037d7e9460e06b6`
+
+Do not point this app at `mysc-bmp-14173451` or any `inner-platform-*` Firebase project. Those are separate production data stores.
+
 ## Deploy
 
 The Vercel project serves Vite static output and rewrites `/api/*` to `api/bff.js`.
@@ -35,3 +45,9 @@ Required production env:
 - Google Drive service account and evidence root/shared drive IDs
 - Cloudflare Turnstile site and secret keys
 - `VITE_SUBMIT_MYSC_ADMIN_EMAILS` and `BFF_SUBMIT_MYSC_ADMIN_EMAILS`
+
+Firestore/Auth API activation is still required for the new project. If `gcloud services enable` returns permission denied, ask a Google Cloud org admin to enable:
+
+- `firestore.googleapis.com`
+- `identitytoolkit.googleapis.com`
+- `firebase.googleapis.com`

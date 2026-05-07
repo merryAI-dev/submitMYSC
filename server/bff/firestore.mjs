@@ -7,8 +7,39 @@ import {
 import { getFirestore } from 'firebase-admin/firestore';
 let firestoreSettingsApplied = false;
 
+const SUBMIT_MYSC_FIREBASE_PROJECT_ID = 'submit-mysc-20260507';
+const FORBIDDEN_FIREBASE_PROJECT_IDS = new Set([
+  'mysc-bmp-14173451',
+  'inner-platform-live-20260316',
+  'inner-platform-qa-20260310',
+]);
+
+function normalizeProjectId(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function assertSubmitMyscFirebaseProjectId(projectId, env = process.env) {
+  const normalized = normalizeProjectId(projectId);
+  if (isFirestoreEmulatorEnabled(env)) return normalized || SUBMIT_MYSC_FIREBASE_PROJECT_ID;
+  if (!normalized) {
+    throw new Error('submitMYSC Firebase project id is required');
+  }
+  if (FORBIDDEN_FIREBASE_PROJECT_IDS.has(normalized)) {
+    throw new Error(`Refusing to use non-submitMYSC Firebase project: ${normalized}`);
+  }
+  if (normalized !== SUBMIT_MYSC_FIREBASE_PROJECT_ID) {
+    throw new Error(`submitMYSC must use Firebase project ${SUBMIT_MYSC_FIREBASE_PROJECT_ID}, got ${normalized}`);
+  }
+  return normalized;
+}
+
 export function resolveProjectId(env = process.env) {
-  return env.FIREBASE_PROJECT_ID || env.VITE_FIREBASE_PROJECT_ID || env.GCLOUD_PROJECT || 'demo-mysc';
+  const resolved = normalizeProjectId(env.SUBMIT_MYSC_FIREBASE_PROJECT_ID)
+    || normalizeProjectId(env.FIREBASE_PROJECT_ID)
+    || normalizeProjectId(env.VITE_FIREBASE_PROJECT_ID)
+    || normalizeProjectId(env.GCLOUD_PROJECT)
+    || SUBMIT_MYSC_FIREBASE_PROJECT_ID;
+  return assertSubmitMyscFirebaseProjectId(resolved, env);
 }
 
 export function isFirestoreEmulatorEnabled(env = process.env) {
