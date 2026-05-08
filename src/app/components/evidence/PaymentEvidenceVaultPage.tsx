@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Copy,
+  Download,
   Eye,
   ExternalLink,
   FileArchive,
@@ -13,6 +14,7 @@ import {
   History,
   Link2,
   Lock,
+  QrCode,
   RefreshCw,
   Search,
   Send,
@@ -82,6 +84,7 @@ import {
   type PaymentEvidenceWorkflowAction,
   type PaymentEvidenceWorkflowStatus,
 } from '../../platform/payment-evidence';
+import { buildSubmissionQrFileName, isPublicSubmissionUrl } from '../../platform/submission-access';
 
 function stripBffEvaluation(paymentCase: PaymentEvidenceCase & { evaluation?: unknown }): PaymentEvidenceCase {
   const { evaluation: _evaluation, ...rest } = paymentCase;
@@ -111,6 +114,17 @@ async function copyText(value: string): Promise<boolean> {
   if (!navigator.clipboard?.writeText) return false;
   await navigator.clipboard.writeText(value);
   return true;
+}
+
+function downloadDataUrl(dataUrl: string, fileName: string): void {
+  if (!dataUrl) return;
+  const anchor = document.createElement('a');
+  anchor.href = dataUrl;
+  anchor.download = fileName;
+  anchor.rel = 'noopener noreferrer';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 const statusLabels: Record<PaymentEvidenceCaseStatus, string> = {
@@ -426,11 +440,14 @@ function SubmissionLinkPanel({
   onCopySubmissionLink: (paymentCase: PaymentEvidenceCase) => void;
   onRevokeSubmissionLink: (paymentCase: PaymentEvidenceCase) => void;
 }) {
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [qrError, setQrError] = useState('');
   const linkStatus = paymentCase.submissionLinkStatus || 'none';
   const active = linkStatus === 'active';
   const expired = active && paymentCase.submissionLinkExpiresAt
     ? paymentCase.submissionLinkExpiresAt <= new Date().toISOString()
     : false;
+  const canRenderQr = Boolean(submissionUrl && isPublicSubmissionUrl(submissionUrl));
   const canCreate = platformApiActive && !['submitted', 'approved', 'closed'].includes(resolvePaymentEvidenceWorkflowStatus(paymentCase));
   const statusLabel = expired
     ? '만료'
@@ -441,6 +458,34 @@ function SubmissionLinkPanel({
         : linkStatus === 'revoked'
           ? '폐기'
           : '미발급';
+
+  useEffect(() => {
+    let cancelled = false;
+    setQrDataUrl('');
+    setQrError('');
+    if (!submissionUrl || !canRenderQr) return;
+
+    void import('qrcode')
+      .then(({ toDataURL }) => toDataURL(submissionUrl, {
+        errorCorrectionLevel: 'M',
+        margin: 1,
+        width: 184,
+        color: {
+          dark: '#0f172a',
+          light: '#ffffff',
+        },
+      }))
+      .then((value) => {
+        if (!cancelled) setQrDataUrl(value);
+      })
+      .catch(() => {
+        if (!cancelled) setQrError('QR을 생성하지 못했습니다.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canRenderQr, submissionUrl]);
 
   return (
     <div className="rounded-lg border bg-background p-3">
@@ -503,6 +548,46 @@ function SubmissionLinkPanel({
           </Button>
         </div>
       </div>
+      {submissionUrl && (
+        <div className="mt-3 grid gap-3 border-t pt-3 sm:grid-cols-[156px_minmax(0,1fr)]">
+          <div className="flex h-[156px] w-[156px] items-center justify-center rounded-md border bg-white">
+            {qrDataUrl ? (
+              <img
+                src={qrDataUrl}
+                alt={`${paymentCase.payeeName} 제출 QR`}
+                className="h-[138px] w-[138px]"
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-2 text-[10px] text-muted-foreground">
+                <QrCode className="h-5 w-5" />
+                <span>{qrError || 'QR 생성 중'}</span>
+              </div>
+            )}
+          </div>
+          <div className="flex min-w-0 flex-col justify-between gap-3">
+            <div>
+              <p className="text-[11px]" style={{ fontWeight: 800 }}>외부 제출 QR</p>
+              <p className="mt-1 text-[10px] leading-5 text-muted-foreground">
+                수령자는 Google 로그인 없이 QR을 열어 필수 문서 3종을 제출합니다. QR은 발급된 원문 URL이 보이는 동안에만 다운로드할 수 있습니다.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 w-fit gap-1.5 px-2 text-[11px]"
+              disabled={!qrDataUrl}
+              onClick={() => downloadDataUrl(qrDataUrl, buildSubmissionQrFileName({
+                caseId: paymentCase.id,
+                payeeName: paymentCase.payeeName,
+              }))}
+            >
+              <Download className="h-3.5 w-3.5" />
+              QR 다운로드
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
