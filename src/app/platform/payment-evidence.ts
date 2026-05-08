@@ -51,6 +51,9 @@ export interface PaymentEvidenceCase {
   campaignId: string;
   campaignName: string;
   payeeName: string;
+  recipientEmail?: string;
+  requestSenderEmail?: string;
+  requestReplyToEmail?: string;
   roleLabel?: string;
   expectedAmount: number;
   expectedIncomeType?: string;
@@ -76,6 +79,12 @@ export interface PaymentEvidenceCase {
   submissionLinkStatus?: 'active' | 'revoked' | 'used' | 'expired' | string;
   submissionLinkCreatedAt?: string;
   submissionLinkExpiresAt?: string;
+  deliveryStatus?: 'PENDING' | 'SENT' | 'FAILED' | 'DRY_RUN' | string;
+  deliveryLastSentAt?: string;
+  deliverySubject?: string;
+  gmailMessageId?: string;
+  gmailThreadId?: string;
+  deliveryError?: string | null;
   sheetSpreadsheetId?: string;
   sheetSyncStatus?: 'SYNCED' | 'FAILED' | 'PENDING';
   sheetLastSyncedAt?: string;

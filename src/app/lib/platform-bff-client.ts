@@ -8,6 +8,7 @@ import type {
 import { PlatformApiClient } from '../platform/api-client';
 import type {
   PaymentEvidenceCase,
+  PaymentEvidenceDocument,
   PaymentEvidenceDocumentType,
   PaymentEvidenceEvaluation,
   PaymentEvidenceWorkflowAction,
@@ -295,6 +296,23 @@ export interface PaymentEvidenceCaseMutationResult {
   updatedAt: string;
 }
 
+export interface UpsertPaymentEvidenceCasePayload {
+  id: string;
+  campaignId: string;
+  campaignName: string;
+  payeeName: string;
+  recipientEmail?: string;
+  requestSenderEmail?: string;
+  requestReplyToEmail?: string;
+  roleLabel?: string;
+  expectedAmount: number;
+  expectedIncomeType?: string;
+  expectedPayDate?: string;
+  reviewerName?: string;
+  documents?: Array<Pick<PaymentEvidenceDocument, 'id' | 'type' | 'fileName' | 'extractedFields' | 'validatedFields' | 'parserConfidence'>>;
+  expectedVersion?: number;
+}
+
 export interface PaymentEvidenceWorkflowActionResult extends PaymentEvidenceCaseMutationResult {
   sheetRows?: unknown;
 }
@@ -351,6 +369,17 @@ export interface PaymentEvidenceSubmissionLinkResult {
   submissionPath?: string;
   submissionUrl: string;
   expiresAt: string;
+  delivery?: {
+    status: 'SENT' | 'FAILED' | 'DRY_RUN' | string;
+    messageId?: string | null;
+    threadId?: string | null;
+    error?: string;
+    senderEmail?: string;
+    recipientEmail?: string;
+    replyToEmail?: string;
+    subject?: string | null;
+    sentAt?: string;
+  } | null;
   case?: PaymentEvidenceCase;
   evaluation?: PaymentEvidenceEvaluation;
   version?: number;
@@ -973,6 +1002,26 @@ export async function fetchPaymentEvidenceCasesViaBff(params: {
   return response.data;
 }
 
+export async function upsertPaymentEvidenceCaseViaBff(params: {
+  tenantId: string;
+  actor: ActorLike;
+  payload: UpsertPaymentEvidenceCasePayload;
+  client?: PlatformApiClientLike;
+}): Promise<PaymentEvidenceCaseMutationResult> {
+  const apiClient = resolveClient(params.client);
+  const response = await apiClient.post<PaymentEvidenceCaseMutationResult>(
+    '/api/v1/payment-evidence/cases',
+    {
+      tenantId: params.tenantId,
+      actor: toRequestActor(params.actor),
+      body: params.payload,
+      retries: 0,
+      timeoutMs: 15000,
+    },
+  );
+  return response.data;
+}
+
 export async function runPaymentEvidenceWorkflowActionViaBff(params: {
   tenantId: string;
   actor: ActorLike;
@@ -1057,6 +1106,12 @@ export async function createPaymentEvidenceSubmissionLinkViaBff(params: {
   expectedVersion: number;
   expiresInDays?: number;
   publicBaseUrl?: string;
+  sendEmail?: boolean;
+  recipientEmail?: string;
+  senderEmail?: string;
+  replyToEmail?: string;
+  emailSubject?: string;
+  emailMessage?: string;
   client?: PlatformApiClientLike;
 }): Promise<PaymentEvidenceSubmissionLinkResult> {
   const apiClient = resolveClient(params.client);
@@ -1069,6 +1124,12 @@ export async function createPaymentEvidenceSubmissionLinkViaBff(params: {
         expectedVersion: params.expectedVersion,
         expiresInDays: params.expiresInDays,
         publicBaseUrl: params.publicBaseUrl,
+        sendEmail: params.sendEmail,
+        recipientEmail: params.recipientEmail,
+        senderEmail: params.senderEmail,
+        replyToEmail: params.replyToEmail,
+        emailSubject: params.emailSubject,
+        emailMessage: params.emailMessage,
       },
       retries: 0,
       timeoutMs: 15000,
@@ -1107,6 +1168,12 @@ export async function rejectAndReissuePaymentEvidenceCaseViaBff(params: {
   actorName?: string;
   expiresInDays?: number;
   publicBaseUrl?: string;
+  sendEmail?: boolean;
+  recipientEmail?: string;
+  senderEmail?: string;
+  replyToEmail?: string;
+  emailSubject?: string;
+  emailMessage?: string;
   client?: PlatformApiClientLike;
 }): Promise<PaymentEvidenceRejectAndReissueResult> {
   const apiClient = resolveClient(params.client);
@@ -1121,6 +1188,12 @@ export async function rejectAndReissuePaymentEvidenceCaseViaBff(params: {
         actorName: params.actorName,
         expiresInDays: params.expiresInDays,
         publicBaseUrl: params.publicBaseUrl,
+        sendEmail: params.sendEmail,
+        recipientEmail: params.recipientEmail,
+        senderEmail: params.senderEmail,
+        replyToEmail: params.replyToEmail,
+        emailSubject: params.emailSubject,
+        emailMessage: params.emailMessage,
       },
       retries: 0,
       timeoutMs: 15000,

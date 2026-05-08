@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const NON_EMPTY_STRING = z.string().trim().min(1);
 const RECORD_UNKNOWN = z.record(z.string(), z.unknown());
+const EMAIL_STRING = z.string().trim().toLowerCase().email();
 
 export const projectUpsertSchema = z.object({
   id: NON_EMPTY_STRING,
@@ -163,6 +164,9 @@ export const paymentEvidenceCaseUpsertSchema = z.object({
   campaignId: NON_EMPTY_STRING.max(160),
   campaignName: NON_EMPTY_STRING.max(300),
   payeeName: NON_EMPTY_STRING.max(200),
+  recipientEmail: EMAIL_STRING.optional(),
+  requestSenderEmail: EMAIL_STRING.optional(),
+  requestReplyToEmail: EMAIL_STRING.optional(),
   roleLabel: z.string().trim().max(200).optional(),
   expectedAmount: z.number().nonnegative(),
   expectedIncomeType: z.string().trim().max(120).optional(),
@@ -198,6 +202,12 @@ export const paymentEvidenceSubmissionLinkSchema = z.object({
   expectedVersion: z.number().int().positive(),
   expiresInDays: z.number().int().min(1).max(60).optional(),
   publicBaseUrl: z.string().trim().max(2000).optional(),
+  sendEmail: z.boolean().optional(),
+  recipientEmail: EMAIL_STRING.optional(),
+  senderEmail: EMAIL_STRING.optional(),
+  replyToEmail: EMAIL_STRING.optional(),
+  emailSubject: z.string().trim().max(300).optional(),
+  emailMessage: z.string().trim().max(4000).optional(),
 }).strict();
 
 export const paymentEvidenceSubmissionLinkRevokeSchema = z.object({
@@ -210,6 +220,12 @@ export const paymentEvidenceRejectAndReissueSchema = z.object({
   actorName: z.string().trim().max(200).optional(),
   expiresInDays: z.number().int().min(1).max(60).optional(),
   publicBaseUrl: z.string().trim().max(2000).optional(),
+  sendEmail: z.boolean().optional(),
+  recipientEmail: EMAIL_STRING.optional(),
+  senderEmail: EMAIL_STRING.optional(),
+  replyToEmail: EMAIL_STRING.optional(),
+  emailSubject: z.string().trim().max(300).optional(),
+  emailMessage: z.string().trim().max(4000).optional(),
 }).strict();
 
 export const paymentEvidencePublicDocumentUploadSchema = z.object({

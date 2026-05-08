@@ -8,6 +8,7 @@ import {
 } from './auth.mjs';
 import { createFirestoreDb, resolveProjectId } from './firestore.mjs';
 import { createGoogleDriveService } from './google-drive.mjs';
+import { createGoogleGmailService } from './google-gmail.mjs';
 import { createGoogleSheetsService } from './google-sheets.mjs';
 import { createIdempotencyService } from './idempotency.mjs';
 import { createPiiProtector } from './pii-protection.mjs';
@@ -217,6 +218,7 @@ export function createBffApp(options = {}) {
     auditChainService: options.auditChainService || createAuditChainService(db, { now }),
     piiProtector: options.piiProtector || createPiiProtector(env),
     driveService: options.driveService || createGoogleDriveService({ env }),
+    gmailService: options.gmailService || createGoogleGmailService({ env }),
     googleSheetsService: options.googleSheetsService || createGoogleSheetsService({ env }),
     turnstileVerifier: options.turnstileVerifier || createTurnstileVerifier(),
   });

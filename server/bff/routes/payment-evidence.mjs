@@ -44,6 +44,7 @@ import {
 } from '../schemas.mjs';
 import { GoogleSheetsServiceError } from '../google-sheets.mjs';
 import { DriveServiceError } from '../google-drive.mjs';
+import { GoogleGmailServiceError } from '../google-gmail.mjs';
 
 const DEFAULT_PAYMENT_EVIDENCE_SHEET_NAMES = {
   cases: 'payment_evidence_cases',
@@ -75,6 +76,9 @@ function sanitizePaymentEvidenceCasePayload(parsed) {
     campaignId: parsed.campaignId.trim(),
     campaignName: parsed.campaignName.trim(),
     payeeName: parsed.payeeName.trim(),
+    recipientEmail: readOptionalText(parsed.recipientEmail) || undefined,
+    requestSenderEmail: readOptionalText(parsed.requestSenderEmail) || undefined,
+    requestReplyToEmail: readOptionalText(parsed.requestReplyToEmail) || undefined,
     roleLabel: readOptionalText(parsed.roleLabel) || undefined,
     expectedAmount: parsed.expectedAmount,
     expectedIncomeType: readOptionalText(parsed.expectedIncomeType) || undefined,
@@ -163,6 +167,116 @@ function resolvePublicBaseUrl(req, explicitBaseUrl) {
   const origin = normalizeBaseUrl(req.header('origin'));
   if (origin) return origin;
   return `${req.protocol}://${req.get('host')}`;
+}
+
+function resolveSubmissionEmailParams({ parsed, paymentCase, actorEmail }) {
+  const senderEmail = readOptionalText(parsed.senderEmail)
+    || readOptionalText(paymentCase.requestSenderEmail)
+    || readOptionalText(actorEmail);
+  const replyToEmail = readOptionalText(parsed.replyToEmail)
+    || readOptionalText(paymentCase.requestReplyToEmail)
+    || senderEmail;
+  return {
+    recipientEmail: readOptionalText(parsed.recipientEmail) || readOptionalText(paymentCase.recipientEmail),
+    senderEmail,
+    replyToEmail,
+    subject: readOptionalText(parsed.emailSubject),
+    message: readOptionalText(parsed.emailMessage),
+  };
+}
+
+function safeDeliveryError(error) {
+  if (error instanceof GoogleGmailServiceError) {
+    if (error.code === 'google_gmail_api_error') return 'Gmail API가 발송을 거부했습니다. 발신자 위임/권한을 확인해 주세요.';
+    return error.message;
+  }
+  return 'Gmail 발송에 실패했습니다.';
+}
+
+async function maybeSendSubmissionRequestEmail({
+  gmailService,
+  caseRef,
+  paymentCase,
+  parsed,
+  actorEmail,
+  actorId,
+  timestamp,
+  submissionUrl,
+  expiresAt,
+}) {
+  if (!parsed.sendEmail) return { paymentCase, delivery: null };
+
+  const emailParams = resolveSubmissionEmailParams({ parsed, paymentCase, actorEmail });
+  const baseUpdates = stripUndefinedDeep({
+    recipientEmail: emailParams.recipientEmail || undefined,
+    requestSenderEmail: emailParams.senderEmail || undefined,
+    requestReplyToEmail: emailParams.replyToEmail || undefined,
+    deliverySubject: emailParams.subject || undefined,
+    deliveryLastSentAt: timestamp,
+    updatedBy: actorId,
+    updatedAt: timestamp,
+  });
+
+  try {
+    if (!gmailService || typeof gmailService.sendPaymentEvidenceSubmissionRequest !== 'function') {
+      throw new GoogleGmailServiceError('Gmail send is not configured', {
+        statusCode: 503,
+        code: 'google_gmail_not_configured',
+      });
+    }
+    const delivery = await gmailService.sendPaymentEvidenceSubmissionRequest({
+      paymentCase: { ...paymentCase, ...baseUpdates },
+      submissionUrl,
+      expiresAt,
+      senderEmail: emailParams.senderEmail,
+      senderName: 'MYSC',
+      recipientEmail: emailParams.recipientEmail,
+      replyToEmail: emailParams.replyToEmail,
+      subject: emailParams.subject,
+      message: emailParams.message,
+    });
+    const updates = stripUndefinedDeep({
+      ...baseUpdates,
+      deliveryStatus: delivery.status === 'DRY_RUN' ? 'DRY_RUN' : 'SENT',
+      gmailMessageId: delivery.messageId || undefined,
+      gmailThreadId: delivery.threadId || undefined,
+      deliveryError: null,
+      deliverySubject: delivery.subject || baseUpdates.deliverySubject || undefined,
+    });
+    await caseRef.set(updates, { merge: true });
+    return {
+      paymentCase: { ...paymentCase, ...updates },
+      delivery: {
+        status: updates.deliveryStatus,
+        messageId: delivery.messageId || null,
+        threadId: delivery.threadId || null,
+        senderEmail: updates.requestSenderEmail,
+        recipientEmail: updates.recipientEmail,
+        replyToEmail: updates.requestReplyToEmail,
+        subject: updates.deliverySubject || null,
+        sentAt: timestamp,
+      },
+    };
+  } catch (error) {
+    const updates = stripUndefinedDeep({
+      ...baseUpdates,
+      deliveryStatus: 'FAILED',
+      deliveryError: safeDeliveryError(error),
+    });
+    await caseRef.set(updates, { merge: true });
+    return {
+      paymentCase: { ...paymentCase, ...updates },
+      delivery: {
+        status: 'FAILED',
+        error: updates.deliveryError,
+        senderEmail: updates.requestSenderEmail,
+        recipientEmail: updates.recipientEmail,
+        replyToEmail: updates.requestReplyToEmail,
+        subject: updates.deliverySubject || null,
+        sentAt: timestamp,
+      },
+    };
+  }
 }
 
 function currentAttemptCount(tokenRecord) {
@@ -286,7 +400,7 @@ async function verifyPaymentEvidenceTurnstileOrThrow({ turnstileVerifier, token,
 }
 
 export function mountPaymentEvidenceRoutes(app, {
-  db, now, idempotencyService, auditChainService, piiProtector, googleSheetsService, driveService, turnstileVerifier,
+  db, now, idempotencyService, auditChainService, piiProtector, googleSheetsService, driveService, gmailService, turnstileVerifier,
 }) {
   app.get('/api/v1/payment-evidence/cases', asyncHandler(async (req, res) => {
     const { tenantId } = req.context;
@@ -787,6 +901,19 @@ export function mountPaymentEvidenceRoutes(app, {
     });
 
     const submissionPath = buildPublicSubmissionPath(issued.rawToken);
+    const submissionUrl = `${publicBaseUrl}${submissionPath}`;
+    const deliveryResult = await maybeSendSubmissionRequestEmail({
+      gmailService,
+      caseRef,
+      paymentCase: result.nextCase,
+      parsed,
+      actorEmail,
+      actorId,
+      timestamp,
+      submissionUrl,
+      expiresAt: issued.tokenRecord.expiresAt,
+    });
+    const responseCase = deliveryResult.paymentCase;
     return {
       status: 200,
       body: {
@@ -794,12 +921,13 @@ export function mountPaymentEvidenceRoutes(app, {
         tenantId,
         tokenId: issued.tokenRecord.id,
         submissionPath,
-        submissionUrl: `${publicBaseUrl}${submissionPath}`,
+        submissionUrl,
         expiresAt: issued.tokenRecord.expiresAt,
-        case: result.nextCase,
-        evaluation: evaluatePaymentEvidenceCase(result.nextCase),
+        delivery: deliveryResult.delivery,
+        case: responseCase,
+        evaluation: evaluatePaymentEvidenceCase(responseCase),
         version: result.nextVersion,
-        updatedAt: result.nextCase.updatedAt,
+        updatedAt: responseCase.updatedAt,
       },
     };
   }));
@@ -995,6 +1123,19 @@ export function mountPaymentEvidenceRoutes(app, {
     });
 
     const submissionPath = buildPublicSubmissionPath(issued.rawToken);
+    const submissionUrl = `${publicBaseUrl}${submissionPath}`;
+    const deliveryResult = await maybeSendSubmissionRequestEmail({
+      gmailService,
+      caseRef,
+      paymentCase: result.nextCase,
+      parsed,
+      actorEmail,
+      actorId,
+      timestamp,
+      submissionUrl,
+      expiresAt: issued.tokenRecord.expiresAt,
+    });
+    const responseCase = deliveryResult.paymentCase;
     return {
       status: 200,
       body: {
@@ -1002,14 +1143,15 @@ export function mountPaymentEvidenceRoutes(app, {
         tenantId,
         tokenId: issued.tokenRecord.id,
         submissionPath,
-        submissionUrl: `${publicBaseUrl}${submissionPath}`,
+        submissionUrl,
         expiresAt: issued.tokenRecord.expiresAt,
         rejectedAt: timestamp,
         rejectionReason: parsed.reason,
-        case: result.nextCase,
-        evaluation: evaluatePaymentEvidenceCase(result.nextCase),
+        delivery: deliveryResult.delivery,
+        case: responseCase,
+        evaluation: evaluatePaymentEvidenceCase(responseCase),
         version: result.nextVersion,
-        updatedAt: result.nextCase.updatedAt,
+        updatedAt: responseCase.updatedAt,
       },
     };
   }));

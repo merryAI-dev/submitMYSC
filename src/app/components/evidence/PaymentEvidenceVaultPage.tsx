@@ -14,6 +14,9 @@ import {
   History,
   Link2,
   Lock,
+  Mail,
+  MailCheck,
+  Plus,
   QrCode,
   RefreshCw,
   Search,
@@ -65,6 +68,7 @@ import {
   revokePaymentEvidenceSubmissionLinkViaBff,
   runPaymentEvidenceWorkflowActionViaBff,
   syncPaymentEvidenceCaseSheetsViaBff,
+  upsertPaymentEvidenceCaseViaBff,
   uploadPaymentEvidenceDocumentViaBff,
 } from '../../lib/platform-bff-client';
 import { resolveApiErrorMessage } from '../../platform/api-error-message';
@@ -125,6 +129,75 @@ function downloadDataUrl(dataUrl: string, fileName: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
+}
+
+function normalizeEmailInput(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function buildPaymentEvidenceRequestCaseId(payeeName: string): string {
+  const date = new Date();
+  const yyyymmdd = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('');
+  const nameSegment = payeeName
+    .normalize('NFC')
+    .replace(/[^0-9A-Za-z가-힣]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24) || 'recipient';
+  const nonce = Math.random().toString(36).slice(2, 8);
+  return `PAY-${yyyymmdd}-${nameSegment}-${nonce}`;
+}
+
+function isPreSubmissionRequest(paymentCase: PaymentEvidenceCase): boolean {
+  return ['draft', 'sent', 'rejected'].includes(resolvePaymentEvidenceWorkflowStatus(paymentCase));
+}
+
+function isReviewQueueCase(paymentCase: PaymentEvidenceCase): boolean {
+  return ['submitted', 'approved', 'closed'].includes(resolvePaymentEvidenceWorkflowStatus(paymentCase));
+}
+
+function deliveryLabel(paymentCase: PaymentEvidenceCase): string {
+  if (paymentCase.deliveryStatus === 'SENT') return '메일 발송';
+  if (paymentCase.deliveryStatus === 'DRY_RUN') return '메일 리허설';
+  if (paymentCase.deliveryStatus === 'FAILED') return '발송 실패';
+  if (paymentCase.submissionLinkStatus === 'active') return '링크 활성';
+  return '대기';
+}
+
+interface SubmissionRequestFormState {
+  payeeName: string;
+  recipientEmail: string;
+  campaignId: string;
+  campaignName: string;
+  roleLabel: string;
+  expectedAmount: string;
+  expectedIncomeType: string;
+  expectedPayDate: string;
+  senderEmail: string;
+  replyToEmail: string;
+  emailSubject: string;
+  emailMessage: string;
+}
+
+function buildInitialRequestForm(email = ''): SubmissionRequestFormState {
+  const senderEmail = normalizeEmailInput(email);
+  return {
+    payeeName: '',
+    recipientEmail: '',
+    campaignId: `MYSC-${new Date().getFullYear()}`,
+    campaignName: 'MYSC 비용지급 증빙',
+    roleLabel: '',
+    expectedAmount: '',
+    expectedIncomeType: '',
+    expectedPayDate: '',
+    senderEmail,
+    replyToEmail: senderEmail,
+    emailSubject: '',
+    emailMessage: '',
+  };
 }
 
 const statusLabels: Record<PaymentEvidenceCaseStatus, string> = {
@@ -748,6 +821,8 @@ export function PaymentEvidenceVaultPage() {
   const [loadError, setLoadError] = useState('');
   const [actionBusy, setActionBusy] = useState(false);
   const [linkBusy, setLinkBusy] = useState(false);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [requestForm, setRequestForm] = useState<SubmissionRequestFormState>(() => buildInitialRequestForm(currentUser.email));
   const [uploadBusy, setUploadBusy] = useState(false);
   const [submissionLinks, setSubmissionLinks] = useState<Record<string, string>>({});
   const [uploadTarget, setUploadTarget] = useState<{
@@ -778,6 +853,16 @@ export function PaymentEvidenceVaultPage() {
     idToken: authUser?.idToken,
   }), [authUser?.idToken, currentUser.email, currentUser.role, currentUser.uid]);
 
+  useEffect(() => {
+    const nextEmail = normalizeEmailInput(currentUser.email);
+    if (!nextEmail) return;
+    setRequestForm((previous) => ({
+      ...previous,
+      senderEmail: previous.senderEmail || nextEmail,
+      replyToEmail: previous.replyToEmail || previous.senderEmail || nextEmail,
+    }));
+  }, [currentUser.email]);
+
   const reloadPaymentEvidenceCases = useCallback(async () => {
     if (!platformApiActive) {
       setCases(PAYMENT_EVIDENCE_CASES);
@@ -796,9 +881,9 @@ export function PaymentEvidenceVaultPage() {
       const nextCases = result.items.map(stripBffEvaluation);
       setCases(nextCases);
       setSelectedCaseId((previousId) => (
-        nextCases.some((paymentCase) => paymentCase.id === previousId)
+        nextCases.some((paymentCase) => paymentCase.id === previousId && isReviewQueueCase(paymentCase))
           ? previousId
-          : nextCases[0]?.id || ''
+          : nextCases.find(isReviewQueueCase)?.id || ''
       ));
     } catch (error) {
       const message = resolveApiErrorMessage(error, '지급증빙 케이스를 불러오지 못했습니다.');
@@ -825,6 +910,7 @@ export function PaymentEvidenceVaultPage() {
   const filteredCases = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return decoratedCases.filter(({ paymentCase, result }) => {
+      if (!isReviewQueueCase(paymentCase)) return false;
       if (statusFilter !== 'ALL' && result.status !== statusFilter) return false;
       if (riskFilter !== 'ALL' && result.risk !== riskFilter) return false;
       if (workflowFilter !== 'ALL' && resolvePaymentEvidenceWorkflowStatus(paymentCase) !== workflowFilter) return false;
@@ -833,22 +919,32 @@ export function PaymentEvidenceVaultPage() {
         paymentCase.id,
         paymentCase.campaignName,
         paymentCase.payeeName,
+        paymentCase.recipientEmail || '',
         paymentCase.roleLabel || '',
       ].some((value) => value.toLowerCase().includes(normalizedQuery));
     });
   }, [decoratedCases, query, riskFilter, statusFilter, workflowFilter]);
 
+  const requestCases = useMemo(() => {
+    return decoratedCases
+      .filter(({ paymentCase }) => isPreSubmissionRequest(paymentCase))
+      .slice(0, 20);
+  }, [decoratedCases]);
+
   const selectedCase = useMemo(() => {
-    return cases.find((paymentCase) => paymentCase.id === selectedCaseId)
+    const selected = cases.find((paymentCase) => paymentCase.id === selectedCaseId && isReviewQueueCase(paymentCase));
+    return selected
       || filteredCases[0]?.paymentCase
-      || cases[0];
+      || cases.find(isReviewQueueCase);
   }, [cases, filteredCases, selectedCaseId]);
 
   const stats = useMemo(() => {
-    const evaluations = decoratedCases.map(({ result }) => result);
-    const workflowStatuses = cases.map(resolvePaymentEvidenceWorkflowStatus);
+    const reviewDecorated = decoratedCases.filter(({ paymentCase }) => isReviewQueueCase(paymentCase));
+    const evaluations = reviewDecorated.map(({ result }) => result);
+    const workflowStatuses = reviewDecorated.map(({ paymentCase }) => resolvePaymentEvidenceWorkflowStatus(paymentCase));
     return {
       total: evaluations.length,
+      pendingRequests: cases.filter(isPreSubmissionRequest).length,
       blocked: evaluations.filter((result) => result.status === 'blocked').length,
       needsReview: evaluations.filter((result) => result.status === 'needs_review').length,
       ready: evaluations.filter((result) => result.status === 'ready_to_approve').length,
@@ -880,6 +976,142 @@ export function PaymentEvidenceVaultPage() {
     }
     setUploadTarget({ caseId: paymentCase.id, type });
     fileInputRef.current?.click();
+  }
+
+  function updateRequestForm<K extends keyof SubmissionRequestFormState>(
+    key: K,
+    value: SubmissionRequestFormState[K],
+  ) {
+    setRequestForm((previous) => ({ ...previous, [key]: value }));
+  }
+
+  async function sendSubmissionRequestForCase(paymentCase: PaymentEvidenceCase, options: {
+    recipientEmail?: string;
+    senderEmail?: string;
+    replyToEmail?: string;
+    emailSubject?: string;
+    emailMessage?: string;
+  } = {}) {
+    const result = await createPaymentEvidenceSubmissionLinkViaBff({
+      tenantId: orgId,
+      actor: bffActor,
+      caseId: paymentCase.id,
+      expectedVersion: paymentCase.version || 1,
+      publicBaseUrl: window.location.origin,
+      sendEmail: true,
+      recipientEmail: options.recipientEmail || paymentCase.recipientEmail,
+      senderEmail: options.senderEmail || paymentCase.requestSenderEmail || currentUser.email,
+      replyToEmail: options.replyToEmail || paymentCase.requestReplyToEmail || paymentCase.requestSenderEmail || currentUser.email,
+      emailSubject: options.emailSubject,
+      emailMessage: options.emailMessage,
+    });
+    if (result.case) {
+      const nextCase = result.case;
+      setCases((prev) => {
+        const exists = prev.some((candidate) => candidate.id === nextCase.id);
+        return exists
+          ? prev.map((candidate) => (candidate.id === nextCase.id ? nextCase : candidate))
+          : [nextCase, ...prev];
+      });
+    }
+    setSubmissionLinks((prev) => ({
+      ...prev,
+      [paymentCase.id]: result.submissionUrl,
+    }));
+    await copyText(result.submissionUrl);
+    return result;
+  }
+
+  async function handleCreateAndSendRequest() {
+    if (!platformApiActive) {
+      toast.error('BFF 저장 모드에서만 요청 발송을 사용할 수 있습니다.');
+      return;
+    }
+
+    const payeeName = requestForm.payeeName.trim();
+    const recipientEmail = normalizeEmailInput(requestForm.recipientEmail);
+    const senderEmail = normalizeEmailInput(requestForm.senderEmail);
+    const replyToEmail = normalizeEmailInput(requestForm.replyToEmail || requestForm.senderEmail);
+    const expectedAmount = Number(requestForm.expectedAmount.replace(/[^\d.]/g, ''));
+
+    if (!payeeName || !recipientEmail || !senderEmail || !requestForm.campaignName.trim()) {
+      toast.error('수령자, 이메일, 발신자, 요청명을 입력해 주세요.');
+      return;
+    }
+    if (!Number.isFinite(expectedAmount) || expectedAmount < 0) {
+      toast.error('지급 예정 금액을 숫자로 입력해 주세요.');
+      return;
+    }
+
+    try {
+      setRequestBusy(true);
+      const caseId = buildPaymentEvidenceRequestCaseId(payeeName);
+      const upsertResult = await upsertPaymentEvidenceCaseViaBff({
+        tenantId: orgId,
+        actor: bffActor,
+        payload: {
+          id: caseId,
+          campaignId: requestForm.campaignId.trim() || `MYSC-${new Date().getFullYear()}`,
+          campaignName: requestForm.campaignName.trim(),
+          payeeName,
+          recipientEmail,
+          requestSenderEmail: senderEmail,
+          requestReplyToEmail: replyToEmail,
+          roleLabel: requestForm.roleLabel.trim() || undefined,
+          expectedAmount,
+          expectedIncomeType: requestForm.expectedIncomeType.trim() || undefined,
+          expectedPayDate: requestForm.expectedPayDate.trim() || undefined,
+          reviewerName: currentUser.name || undefined,
+          documents: [],
+        },
+      });
+      const linkResult = await sendSubmissionRequestForCase(upsertResult.case, {
+        recipientEmail,
+        senderEmail,
+        replyToEmail,
+        emailSubject: requestForm.emailSubject.trim() || undefined,
+        emailMessage: requestForm.emailMessage.trim() || undefined,
+      });
+
+      const status = linkResult.delivery?.status;
+      if (status === 'SENT' || status === 'DRY_RUN') {
+        toast.success(status === 'DRY_RUN' ? '요청 생성 및 메일 리허설 완료' : '요청 생성 및 메일 발송 완료');
+      } else if (status === 'FAILED') {
+        toast.warning('요청 링크는 생성됐지만 메일 발송은 실패했습니다. 링크는 클립보드에 복사했습니다.');
+      } else {
+        toast.success('요청 링크 생성 완료');
+      }
+
+      setRequestForm((previous) => ({
+        ...buildInitialRequestForm(senderEmail),
+        campaignId: previous.campaignId,
+        campaignName: previous.campaignName,
+        expectedIncomeType: previous.expectedIncomeType,
+        expectedPayDate: previous.expectedPayDate,
+        senderEmail,
+        replyToEmail,
+      }));
+    } catch (error) {
+      toast.error(resolveApiErrorMessage(error, '제출 요청을 발송하지 못했습니다.'));
+    } finally {
+      setRequestBusy(false);
+    }
+  }
+
+  async function handleResendSubmissionRequest(paymentCase: PaymentEvidenceCase) {
+    try {
+      setRequestBusy(true);
+      const result = await sendSubmissionRequestForCase(paymentCase);
+      if (result.delivery?.status === 'FAILED') {
+        toast.warning('새 링크는 생성됐지만 메일 재발송은 실패했습니다. 링크는 클립보드에 복사했습니다.');
+      } else {
+        toast.success('새 제출 링크 및 QR 메일 재발송 완료');
+      }
+    } catch (error) {
+      toast.error(resolveApiErrorMessage(error, '요청 메일을 재발송하지 못했습니다.'));
+    } finally {
+      setRequestBusy(false);
+    }
   }
 
   async function openPreviewDialog(paymentCase: PaymentEvidenceCase, documentId: string) {
@@ -1089,6 +1321,11 @@ export function PaymentEvidenceVaultPage() {
             reason: actionNote,
             actorName,
             publicBaseUrl: window.location.origin,
+            sendEmail: Boolean(actionTarget.recipientEmail && (actionTarget.requestSenderEmail || currentUser.email)),
+            recipientEmail: actionTarget.recipientEmail,
+            senderEmail: actionTarget.requestSenderEmail || currentUser.email,
+            replyToEmail: actionTarget.requestReplyToEmail || actionTarget.requestSenderEmail || currentUser.email,
+            emailMessage: actionNote,
           });
           if (!rejectResult.case) return;
           nextCase = rejectResult.case;
@@ -1172,13 +1409,191 @@ export function PaymentEvidenceVaultPage() {
       />
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-        <StatCard icon={FileCheck2} label="전체 케이스" value={stats.total} color="#2563eb" />
+        <StatCard icon={Mail} label="제출 요청" value={stats.pendingRequests} color="#2563eb" />
         <StatCard icon={AlertTriangle} label="차단" value={stats.blocked} color="#e11d48" />
         <StatCard icon={ShieldCheck} label="승인 가능" value={stats.ready} color="#059669" />
         <StatCard icon={Upload} label="제출 완료" value={stats.submitted} color="#d97706" />
         <StatCard icon={CheckCircle2} label="승인" value={stats.approved} color="#16a34a" />
         <StatCard icon={Lock} label="close" value={stats.closed} color="#0f766e" />
       </div>
+
+      <Card className="border-border/50 shadow-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-[14px]">
+            <MailCheck className="h-4 w-4 text-teal-600" />
+            제출 요청 발송
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2 md:grid-cols-4">
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.payeeName}
+              onChange={(event) => updateRequestForm('payeeName', event.target.value)}
+              placeholder="수령자 이름"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              type="email"
+              value={requestForm.recipientEmail}
+              onChange={(event) => updateRequestForm('recipientEmail', event.target.value)}
+              placeholder="수령자 이메일"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.expectedAmount}
+              onChange={(event) => updateRequestForm('expectedAmount', event.target.value)}
+              placeholder="지급 예정 금액"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.roleLabel}
+              onChange={(event) => updateRequestForm('roleLabel', event.target.value)}
+              placeholder="역할/메모"
+            />
+          </div>
+          <div className="grid gap-2 md:grid-cols-4">
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.campaignName}
+              onChange={(event) => updateRequestForm('campaignName', event.target.value)}
+              placeholder="요청명/캠페인"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.campaignId}
+              onChange={(event) => updateRequestForm('campaignId', event.target.value)}
+              placeholder="캠페인 ID"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.expectedIncomeType}
+              onChange={(event) => updateRequestForm('expectedIncomeType', event.target.value)}
+              placeholder="소득구분"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.expectedPayDate}
+              onChange={(event) => updateRequestForm('expectedPayDate', event.target.value)}
+              placeholder="지급 예정일"
+            />
+          </div>
+          <div className="grid gap-2 md:grid-cols-3">
+            <Input
+              className="h-8 text-[11px]"
+              type="email"
+              value={requestForm.senderEmail}
+              onChange={(event) => updateRequestForm('senderEmail', event.target.value)}
+              placeholder="보내는 사람 이메일"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              type="email"
+              value={requestForm.replyToEmail}
+              onChange={(event) => updateRequestForm('replyToEmail', event.target.value)}
+              placeholder="회신 받을 이메일"
+            />
+            <Input
+              className="h-8 text-[11px]"
+              value={requestForm.emailSubject}
+              onChange={(event) => updateRequestForm('emailSubject', event.target.value)}
+              placeholder="메일 제목 자동 생성"
+            />
+          </div>
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+            <Textarea
+              className="min-h-[74px] text-[11px]"
+              value={requestForm.emailMessage}
+              onChange={(event) => updateRequestForm('emailMessage', event.target.value)}
+              placeholder="메일 본문 추가 메시지"
+            />
+            <Button
+              type="button"
+              className="h-full min-h-[74px] gap-2 px-5"
+              disabled={requestBusy || !platformApiActive}
+              onClick={() => void handleCreateAndSendRequest()}
+            >
+              <Plus className="h-4 w-4" />
+              요청 발송
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/50 shadow-sm">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-[14px]">제출 요청 현황</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-[10px]">요청</TableHead>
+                  <TableHead className="text-[10px]">수령자</TableHead>
+                  <TableHead className="text-[10px]">발신/회신</TableHead>
+                  <TableHead className="text-[10px]">진행</TableHead>
+                  <TableHead className="text-[10px]">발송</TableHead>
+                  <TableHead className="text-right text-[10px]">작업</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {requestCases.map(({ paymentCase }) => (
+                  <TableRow key={paymentCase.id} className="h-10">
+                    <TableCell className="py-1">
+                      <p className="text-[11px]" style={{ fontWeight: 700 }}>{paymentCase.payeeName}</p>
+                      <p className="text-[10px] text-muted-foreground">{paymentCase.campaignName}</p>
+                    </TableCell>
+                    <TableCell className="py-1 text-[11px]">
+                      <p>{paymentCase.recipientEmail || '-'}</p>
+                      <p className="text-[10px] text-muted-foreground">{paymentCase.roleLabel || paymentCase.id}</p>
+                    </TableCell>
+                    <TableCell className="py-1 text-[10px] text-muted-foreground">
+                      <p>{paymentCase.requestSenderEmail || '-'}</p>
+                      <p>{paymentCase.requestReplyToEmail || '-'}</p>
+                    </TableCell>
+                    <TableCell className="py-1">
+                      <WorkflowBadge status={resolvePaymentEvidenceWorkflowStatus(paymentCase)} />
+                    </TableCell>
+                    <TableCell className="py-1">
+                      <span className={`rounded-md border px-2 py-1 text-[10px] ${
+                        paymentCase.deliveryStatus === 'FAILED'
+                          ? 'border-rose-200 bg-rose-50 text-rose-700'
+                          : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      }`}>
+                        {deliveryLabel(paymentCase)}
+                      </span>
+                      {paymentCase.deliveryError && (
+                        <p className="mt-1 max-w-[220px] truncate text-[10px] text-rose-600">{paymentCase.deliveryError}</p>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-1 text-right">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1.5 px-2 text-[11px]"
+                        disabled={requestBusy || !platformApiActive}
+                        onClick={() => void handleResendSubmissionRequest(paymentCase)}
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        재발송
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!requestCases.length && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="h-16 text-center text-[11px] text-muted-foreground">
+                      제출 대기 중인 요청이 없습니다.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="rounded-lg border border-border/50 bg-card p-3 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
@@ -1226,11 +1641,8 @@ export function PaymentEvidenceVaultPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">전체 진행</SelectItem>
-              <SelectItem value="draft">요청 전</SelectItem>
-              <SelectItem value="sent">요청 발송</SelectItem>
               <SelectItem value="submitted">제출 완료</SelectItem>
               <SelectItem value="approved">승인</SelectItem>
-              <SelectItem value="rejected">반려</SelectItem>
               <SelectItem value="closed">정본 완료</SelectItem>
             </SelectContent>
           </Select>
