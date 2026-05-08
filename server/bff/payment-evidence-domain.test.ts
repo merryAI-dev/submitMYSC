@@ -115,6 +115,27 @@ describe('payment evidence BFF domain', () => {
     })).toThrow('반려 사유');
   });
 
+  it('does not mark missing payment confirmation fields as cross-document matches', () => {
+    const result = evaluatePaymentEvidenceCase({
+      ...baseCase,
+      documents: baseCase.documents.map((document) => (
+        document.type === 'payment_confirmation'
+          ? { ...document, extractedFields: {}, validatedFields: {} }
+          : document
+      )),
+    });
+
+    expect(result.status).toBe('needs_review');
+    expect(result.blockerCount).toBe(0);
+    expect(result.warningCount).toBeGreaterThan(0);
+    expect(result.fieldComparisons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'name', matched: false, status: 'missing' }),
+      expect.objectContaining({ key: 'resident_registration_number', matched: false, status: 'missing' }),
+      expect.objectContaining({ key: 'account_number', matched: false, status: 'missing' }),
+      expect.objectContaining({ key: 'account_holder', matched: false, status: 'missing' }),
+    ]));
+  });
+
   it('records rejection and returns the case to sent for reissue', () => {
     const result = applyPaymentEvidenceRejectAndReissue({
       paymentCase: baseCase,

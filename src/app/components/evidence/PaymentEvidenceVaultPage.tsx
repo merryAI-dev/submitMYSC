@@ -85,6 +85,7 @@ import {
   type PaymentEvidenceCase,
   type PaymentEvidenceCaseStatus,
   type PaymentEvidenceDocumentType,
+  type PaymentEvidenceFieldComparison,
   type PaymentEvidenceRisk,
   type PaymentEvidenceWorkflowAction,
   type PaymentEvidenceWorkflowStatus,
@@ -749,6 +750,31 @@ function OcrConsistencyPanel({
   );
 }
 
+function comparisonDisplay(comparison: PaymentEvidenceFieldComparison) {
+  if (comparison.status === 'missing') {
+    return {
+      label: '검수 필요',
+      className: 'text-amber-700',
+    };
+  }
+  if (comparison.matched) {
+    return {
+      label: '일치',
+      className: 'text-emerald-700',
+    };
+  }
+  return {
+    label: '불일치',
+    className: 'text-rose-700',
+  };
+}
+
+function comparisonValues(comparison: PaymentEvidenceFieldComparison) {
+  const counterpartLabel = comparison.idCardValue !== undefined ? '신분증' : '통장';
+  const counterpartValue = comparison.idCardValue || comparison.bankbookValue || '-';
+  return `확인서 ${comparison.paymentValue || '-'} / ${counterpartLabel} ${counterpartValue}`;
+}
+
 function CaseDetail({
   paymentCase,
   onActionRequest,
@@ -831,17 +857,18 @@ function CaseDetail({
               </div>
               <div className="divide-y">
                 {result.fieldComparisons.map((comparison) => (
-                  <div key={comparison.key} className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[100px_minmax(0,1fr)_72px]">
-                    <span className="text-muted-foreground">{comparison.label}</span>
-                    <span className="min-w-0 truncate">
-                      {[comparison.paymentValue, comparison.idCardValue, comparison.bankbookValue]
-                        .filter(Boolean)
-                        .join(' / ') || '-'}
-                    </span>
-                    <span className={comparison.matched ? 'text-emerald-700' : 'text-rose-700'} style={{ fontWeight: 700 }}>
-                      {comparison.matched ? '일치' : '불일치'}
-                    </span>
-                  </div>
+                  (() => {
+                    const display = comparisonDisplay(comparison);
+                    return (
+                      <div key={comparison.key} className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[100px_minmax(0,1fr)_72px]">
+                        <span className="text-muted-foreground">{comparison.label}</span>
+                        <span className="min-w-0 truncate">{comparisonValues(comparison)}</span>
+                        <span className={display.className} style={{ fontWeight: 700 }}>
+                          {display.label}
+                        </span>
+                      </div>
+                    );
+                  })()
                 ))}
               </div>
             </div>

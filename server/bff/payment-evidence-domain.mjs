@@ -242,6 +242,37 @@ function compareMaskedNumber(valueA, valueB) {
   return normalizeDigitsAndMask(valueA) === normalizeDigitsAndMask(valueB);
 }
 
+function compareTextStrict(valueA, valueB) {
+  if (!valueA || !valueB) return false;
+  return normalizeComparableText(valueA) === normalizeComparableText(valueB);
+}
+
+function compareMaskedNumberStrict(valueA, valueB) {
+  if (!valueA || !valueB) return false;
+  return normalizeDigitsAndMask(valueA) === normalizeDigitsAndMask(valueB);
+}
+
+function buildFieldComparison({
+  key,
+  label,
+  paymentValue,
+  idCardValue,
+  bankbookValue,
+  matched,
+}) {
+  const counterpartValue = idCardValue || bankbookValue || '';
+  const hasBothValues = Boolean(paymentValue && counterpartValue);
+  return {
+    key,
+    label,
+    paymentValue,
+    idCardValue,
+    bankbookValue,
+    matched: hasBothValues && Boolean(matched),
+    status: !hasBothValues ? 'missing' : matched ? 'matched' : 'mismatched',
+  };
+}
+
 function addIssue(issues, issue) {
   issues.push(issue);
 }
@@ -361,34 +392,34 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
     issues,
     missingDocumentTypes,
     fieldComparisons: [
-      {
+      buildFieldComparison({
         key: 'name',
         label: PAYMENT_EVIDENCE_FIELD_LABELS.name,
         paymentValue: paymentName,
         idCardValue: idName,
-        matched: compareText(paymentName, idName),
-      },
-      {
+        matched: compareTextStrict(paymentName, idName),
+      }),
+      buildFieldComparison({
         key: 'resident_registration_number',
         label: PAYMENT_EVIDENCE_FIELD_LABELS.resident_registration_number,
         paymentValue: paymentRrn,
         idCardValue: idRrn,
-        matched: compareMaskedNumber(paymentRrn, idRrn),
-      },
-      {
+        matched: compareMaskedNumberStrict(paymentRrn, idRrn),
+      }),
+      buildFieldComparison({
         key: 'account_number',
         label: PAYMENT_EVIDENCE_FIELD_LABELS.account_number,
         paymentValue: paymentAccountNumber,
         bankbookValue: bankbookAccountNumber,
-        matched: compareMaskedNumber(paymentAccountNumber, bankbookAccountNumber),
-      },
-      {
+        matched: compareMaskedNumberStrict(paymentAccountNumber, bankbookAccountNumber),
+      }),
+      buildFieldComparison({
         key: 'account_holder',
         label: PAYMENT_EVIDENCE_FIELD_LABELS.account_holder,
         paymentValue: paymentAccountHolder,
         bankbookValue: bankbookAccountHolder,
-        matched: compareText(paymentAccountHolder, bankbookAccountHolder),
-      },
+        matched: compareTextStrict(paymentAccountHolder, bankbookAccountHolder),
+      }),
     ],
     blockerCount,
     warningCount,

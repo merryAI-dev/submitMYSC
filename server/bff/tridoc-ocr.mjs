@@ -284,14 +284,15 @@ function countPresentRequiredFields(paymentCase) {
 
 function countComparableMatches(fieldComparisons = []) {
   const comparable = fieldComparisons.filter((comparison) => (
-    readOptionalText(comparison.paymentValue)
+    ['matched', 'mismatched', 'missing'].includes(readOptionalText(comparison.status))
+      || readOptionalText(comparison.paymentValue)
       || readOptionalText(comparison.idCardValue)
       || readOptionalText(comparison.bankbookValue)
   ));
   if (!comparable.length) return { total: 0, matched: 0 };
   return {
     total: comparable.length,
-    matched: comparable.filter((comparison) => comparison.matched).length,
+    matched: comparable.filter((comparison) => comparison.status === 'matched' || comparison.matched === true).length,
   };
 }
 

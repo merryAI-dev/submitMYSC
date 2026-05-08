@@ -284,6 +284,23 @@ describe('payment evidence OCR consistency', () => {
     expect(consistency.issueCodes).toContain('account_holder_mismatch');
   });
 
+  it('does not inflate cross-document score when payment confirmation fields are missing', () => {
+    const consistency = computePaymentEvidenceOcrConsistency({
+      ...matchingCase,
+      documents: matchingCase.documents.map((document) => (
+        document.type === 'payment_confirmation'
+          ? { ...document, extractedFields: {}, validatedFields: {} }
+          : document
+      )),
+    });
+
+    expect(consistency.status).toBe('needs_review');
+    expect(consistency.matched).toBe(false);
+    expect(consistency.comparisonScore).toBe(0);
+    expect(consistency.matchProbability).toBeLessThan(0.85);
+    expect(consistency.issueCodes).toContain('missing_field:payment_confirmation:name');
+  });
+
   it('applies OCR fields and metadata onto a payment evidence document', () => {
     const next = applyOcrResultToPaymentEvidenceDocument({
       id: 'doc-bank',

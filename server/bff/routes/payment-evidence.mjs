@@ -457,7 +457,7 @@ export function mountPaymentEvidenceRoutes(app, {
       const data = { id: doc.id, ...doc.data() };
       return {
         ...data,
-        ocrConsistency: data.ocrConsistency || computePaymentEvidenceOcrConsistency(data),
+        ocrConsistency: computePaymentEvidenceOcrConsistency(data),
         evaluation: evaluatePaymentEvidenceCase(data),
       };
     });
@@ -476,7 +476,7 @@ export function mountPaymentEvidenceRoutes(app, {
       tenantId,
       case: {
         ...paymentCase,
-        ocrConsistency: paymentCase.ocrConsistency || computePaymentEvidenceOcrConsistency(paymentCase),
+        ocrConsistency: computePaymentEvidenceOcrConsistency(paymentCase),
       },
       evaluation: evaluatePaymentEvidenceCase(paymentCase),
       version: paymentCase.version,
