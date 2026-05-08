@@ -243,12 +243,36 @@ describe('payment evidence BFF domain', () => {
       maxBytes: 12 * 1024 * 1024,
     })).not.toThrow();
 
+    expect(assertPaymentEvidenceUploadPolicy({
+      fileName: '신분증.JPG',
+      mimeType: 'image/jpg',
+      fileSize: 1024,
+      contentBase64: '/9j/',
+      maxBytes: 12 * 1024 * 1024,
+    })).toMatchObject({ extension: 'jpg', mimeType: 'image/jpeg' });
+
+    expect(assertPaymentEvidenceUploadPolicy({
+      fileName: '통장사본.png',
+      mimeType: 'application/octet-stream',
+      fileSize: 1024,
+      contentBase64: 'iVBORw0KGgo=',
+      maxBytes: 12 * 1024 * 1024,
+    })).toMatchObject({ extension: 'png', mimeType: 'image/png' });
+
     expect(() => assertPaymentEvidenceUploadPolicy({
       fileName: 'malware.html',
       mimeType: 'text/html',
       fileSize: 1024,
       maxBytes: 12 * 1024 * 1024,
-    })).toThrow('허용되지 않는 파일 형식');
+    })).toThrow('허용되지 않는 파일');
+
+    expect(() => assertPaymentEvidenceUploadPolicy({
+      fileName: '신분증.jpg',
+      mimeType: 'application/octet-stream',
+      fileSize: 1024,
+      contentBase64: 'PGh0bWw+',
+      maxBytes: 12 * 1024 * 1024,
+    })).toThrow('일치하지 않습니다');
   });
 
   it('blocks oversized payment evidence uploads', () => {

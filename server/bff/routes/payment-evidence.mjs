@@ -375,10 +375,11 @@ function resolvePaymentEvidenceMaxUploadBytes() {
 
 function assertPaymentEvidenceUploadPolicyOrThrow(parsed) {
   try {
-    assertPaymentEvidenceUploadPolicy({
+    return assertPaymentEvidenceUploadPolicy({
       fileName: parsed.fileName,
       mimeType: parsed.mimeType,
       fileSize: parsed.fileSize,
+      contentBase64: parsed.contentBase64,
       maxBytes: resolvePaymentEvidenceMaxUploadBytes(),
     });
   } catch (error) {
@@ -555,15 +556,17 @@ export function mountPaymentEvidenceRoutes(app, {
     if (!document.driveFileId) throw createHttpError(400, 'Drive file is not linked to this document', 'drive_file_missing');
 
     let downloaded;
+    let previewPolicy;
     try {
       downloaded = await driveService.downloadFileContent({
         fileId: document.driveFileId,
         maxBytes: resolvePaymentEvidenceMaxUploadBytes(),
       });
-      assertPaymentEvidenceUploadPolicyOrThrow({
+      previewPolicy = assertPaymentEvidenceUploadPolicyOrThrow({
         fileName: downloaded.file?.name || document.fileName,
         mimeType: downloaded.mimeType || document.mimeType,
         fileSize: downloaded.size,
+        contentBase64: downloaded.contentBase64,
       });
     } catch (error) {
       if (error instanceof DriveServiceError) throw createHttpError(error.statusCode, error.message, error.code);
@@ -583,7 +586,7 @@ export function mountPaymentEvidenceRoutes(app, {
         source: 'bff',
         documentId: document.id,
         driveFileId: document.driveFileId,
-        mimeType: downloaded.mimeType || document.mimeType || '',
+        mimeType: previewPolicy?.mimeType || downloaded.mimeType || document.mimeType || '',
         fileSize: downloaded.size,
       },
       timestamp: now(),
@@ -594,7 +597,7 @@ export function mountPaymentEvidenceRoutes(app, {
       documentId: document.id,
       type: document.type,
       fileName: downloaded.file?.name || document.fileName,
-      mimeType: downloaded.mimeType || document.mimeType || 'application/octet-stream',
+      mimeType: previewPolicy?.mimeType || downloaded.mimeType || document.mimeType || 'application/octet-stream',
       fileSize: downloaded.size,
       sha256: document.sha256 || null,
       webViewLink: document.webViewLink || downloaded.file?.webViewLink || null,
@@ -702,6 +705,7 @@ export function mountPaymentEvidenceRoutes(app, {
     ) {
       throw createHttpError(503, 'Google Drive payment evidence upload is not configured', 'drive_not_configured');
     }
+    const uploadPolicy = assertPaymentEvidenceUploadPolicyOrThrow(parsed);
 
     let folderResult;
     let uploadedFile;
@@ -714,7 +718,7 @@ export function mountPaymentEvidenceRoutes(app, {
       uploadedFile = await driveService.uploadFileToFolder({
         folderId: folderResult.folder.id,
         fileName: parsed.fileName,
-        mimeType: parsed.mimeType,
+        mimeType: uploadPolicy.mimeType,
         contentBase64: parsed.contentBase64,
         appProperties: {
           managedBy: 'mysc-platform',
@@ -730,6 +734,7 @@ export function mountPaymentEvidenceRoutes(app, {
 
     const baseDocument = normalizeDocument({
       ...parsed,
+      mimeType: uploadPolicy.mimeType,
       driveFileId: uploadedFile.id,
       webViewLink: uploadedFile.webViewLink || undefined,
     });
@@ -737,7 +742,7 @@ export function mountPaymentEvidenceRoutes(app, {
       ocrService,
       document: baseDocument,
       contentBase64: parsed.contentBase64,
-      mimeType: parsed.mimeType,
+      mimeType: uploadPolicy.mimeType,
     });
 
     const outboxEvent = createOutboxEvent({
@@ -824,7 +829,7 @@ export function mountPaymentEvidenceRoutes(app, {
           id: uploadedFile.id,
           name: uploadedFile.name,
           webViewLink: uploadedFile.webViewLink || null,
-          mimeType: uploadedFile.mimeType || parsed.mimeType,
+          mimeType: uploadedFile.mimeType || uploadPolicy.mimeType,
         },
         evaluation: evaluatePaymentEvidenceCase(result.nextCase),
         version: result.nextVersion,
@@ -1458,7 +1463,7 @@ export function mountPaymentEvidenceRoutes(app, {
   app.post('/api/public/payment-evidence/submissions/:token/documents/upload', asyncHandler(async (req, res) => {
     const timestamp = now();
     const parsed = parseWithSchema(paymentEvidencePublicDocumentUploadSchema, req.body, 'Invalid public payment evidence upload payload');
-    assertPaymentEvidenceUploadPolicyOrThrow(parsed);
+    const uploadPolicy = assertPaymentEvidenceUploadPolicyOrThrow(parsed);
     await verifyPaymentEvidenceTurnstileOrThrow({ turnstileVerifier, token: parsed.turnstileToken, req });
     const sha256 = buildPaymentEvidenceDocumentHash(parsed.contentBase64);
     const { tokenRef, tokenRecord } = await lookupSubmissionTokenByRawToken({
@@ -1481,7 +1486,7 @@ export function mountPaymentEvidenceRoutes(app, {
       uploadedFile = await driveService.uploadFileToFolder({
         folderId: folderResult.folder.id,
         fileName: parsed.fileName,
-        mimeType: parsed.mimeType,
+        mimeType: uploadPolicy.mimeType,
         contentBase64: parsed.contentBase64,
         appProperties: {
           managedBy: 'mysc-platform',
@@ -1498,6 +1503,7 @@ export function mountPaymentEvidenceRoutes(app, {
 
     const baseDocument = normalizeDocument({
       ...parsed,
+      mimeType: uploadPolicy.mimeType,
       sha256,
       driveFileId: uploadedFile.id,
       webViewLink: uploadedFile.webViewLink || undefined,
@@ -1507,7 +1513,7 @@ export function mountPaymentEvidenceRoutes(app, {
       ocrService,
       document: baseDocument,
       contentBase64: parsed.contentBase64,
-      mimeType: parsed.mimeType,
+      mimeType: uploadPolicy.mimeType,
     });
     const outboxEvent = createOutboxEvent({
       tenantId: tokenRecord.tenantId,
@@ -1521,7 +1527,7 @@ export function mountPaymentEvidenceRoutes(app, {
         documentType: document.type,
         driveFileId: uploadedFile.id,
         fileSize: parsed.fileSize,
-        mimeType: parsed.mimeType,
+        mimeType: uploadPolicy.mimeType,
         sha256,
       },
       createdAt: timestamp,
@@ -1596,7 +1602,7 @@ export function mountPaymentEvidenceRoutes(app, {
         documentId: document.id,
         driveFileId: uploadedFile.id,
         fileSize: parsed.fileSize,
-        mimeType: parsed.mimeType,
+        mimeType: uploadPolicy.mimeType,
         sha256,
         autoSubmitted: result.autoSubmitted,
         outboxId: outboxEvent.id,
@@ -1605,17 +1611,7 @@ export function mountPaymentEvidenceRoutes(app, {
     });
 
     res.status(200).json({
-      caseId: tokenRecord.caseId,
-      document,
-      driveFile: {
-        id: uploadedFile.id,
-        name: uploadedFile.name,
-        webViewLink: uploadedFile.webViewLink || null,
-        mimeType: uploadedFile.mimeType || parsed.mimeType,
-      },
       autoSubmitted: result.autoSubmitted,
-      version: result.nextVersion,
-      updatedAt: result.nextCase.updatedAt,
       ...buildPaymentEvidencePublicSubmission({
         paymentCase: result.nextCase,
         tokenRecord: result.nextTokenRecord,

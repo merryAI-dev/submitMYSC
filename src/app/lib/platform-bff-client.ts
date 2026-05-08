@@ -452,23 +452,7 @@ export interface UploadPaymentEvidencePublicSubmissionDocumentPayload {
 }
 
 export interface UploadPaymentEvidencePublicSubmissionDocumentResult extends PaymentEvidencePublicSubmissionResult {
-  caseId?: string;
-  document?: {
-    id: string;
-    type: PaymentEvidenceDocumentType;
-    fileName?: string;
-    driveFileId?: string;
-    webViewLink?: string;
-  };
-  driveFile?: {
-    id: string;
-    name: string;
-    webViewLink: string | null;
-    mimeType?: string;
-  };
   autoSubmitted?: boolean;
-  version?: number;
-  updatedAt?: string;
 }
 
 export interface UploadTransactionEvidenceDriveResult extends SyncTransactionEvidenceDriveResult {

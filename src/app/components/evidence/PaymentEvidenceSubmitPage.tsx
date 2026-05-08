@@ -100,7 +100,7 @@ function DocumentUploadCard({
             id={inputId}
             type="file"
             className="hidden"
-            accept="application/pdf,image/*"
+            accept="application/pdf,.pdf,image/jpeg,image/jpg,.jpg,.jpeg,image/png,.png,image/webp,.webp,image/heic,.heic,image/heif,.heif"
             disabled={disabled || uploading}
             onChange={(event) => {
               const file = event.target.files?.[0];

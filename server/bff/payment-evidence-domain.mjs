@@ -8,10 +8,14 @@ export const PAYMENT_EVIDENCE_DEFAULT_MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 export const PAYMENT_EVIDENCE_ALLOWED_UPLOAD_MIME_TYPES = [
   'application/pdf',
   'image/jpeg',
+  'image/jpg',
+  'image/pjpeg',
   'image/png',
+  'image/x-png',
   'image/webp',
   'image/heic',
   'image/heif',
+  'application/octet-stream',
 ];
 
 export const PAYMENT_EVIDENCE_DOCUMENT_LABELS = {
@@ -59,6 +63,109 @@ const REQUIRED_FIELDS_BY_DOCUMENT = {
 
 function normalizeWhitespace(value) {
   return String(value || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+}
+
+function fileExtension(value) {
+  const normalized = normalizeWhitespace(value).toLowerCase();
+  const match = normalized.match(/\.([a-z0-9]{1,12})$/);
+  return match ? match[1] : '';
+}
+
+const UPLOAD_FILE_TYPES = {
+  pdf: {
+    mimeType: 'application/pdf',
+    mimeAliases: ['application/pdf', 'application/octet-stream'],
+    magic: (buffer) => buffer.subarray(0, 4).toString('utf8') === '%PDF',
+  },
+  jpg: {
+    mimeType: 'image/jpeg',
+    mimeAliases: ['image/jpeg', 'image/jpg', 'image/pjpeg', 'application/octet-stream'],
+    magic: (buffer) => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff,
+  },
+  jpeg: {
+    mimeType: 'image/jpeg',
+    mimeAliases: ['image/jpeg', 'image/jpg', 'image/pjpeg', 'application/octet-stream'],
+    magic: (buffer) => buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff,
+  },
+  png: {
+    mimeType: 'image/png',
+    mimeAliases: ['image/png', 'image/x-png', 'application/octet-stream'],
+    magic: (buffer) => buffer.length >= 8
+      && buffer[0] === 0x89
+      && buffer[1] === 0x50
+      && buffer[2] === 0x4e
+      && buffer[3] === 0x47
+      && buffer[4] === 0x0d
+      && buffer[5] === 0x0a
+      && buffer[6] === 0x1a
+      && buffer[7] === 0x0a,
+  },
+  webp: {
+    mimeType: 'image/webp',
+    mimeAliases: ['image/webp', 'application/octet-stream'],
+    magic: (buffer) => buffer.length >= 12
+      && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+      && buffer.subarray(8, 12).toString('ascii') === 'WEBP',
+  },
+  heic: {
+    mimeType: 'image/heic',
+    mimeAliases: ['image/heic', 'image/heif', 'application/octet-stream'],
+    magic: (buffer) => {
+      if (buffer.length < 12) return false;
+      const box = buffer.subarray(4, 8).toString('ascii');
+      const brand = buffer.subarray(8, 12).toString('ascii');
+      return box === 'ftyp' && ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand);
+    },
+  },
+  heif: {
+    mimeType: 'image/heif',
+    mimeAliases: ['image/heif', 'image/heic', 'application/octet-stream'],
+    magic: (buffer) => {
+      if (buffer.length < 12) return false;
+      const box = buffer.subarray(4, 8).toString('ascii');
+      const brand = buffer.subarray(8, 12).toString('ascii');
+      return box === 'ftyp' && ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(brand);
+    },
+  },
+};
+
+function decodeBase64Content(contentBase64) {
+  const normalized = normalizeWhitespace(contentBase64);
+  if (!normalized) return null;
+  try {
+    const buffer = Buffer.from(normalized, 'base64');
+    return buffer.length ? buffer : null;
+  } catch {
+    return null;
+  }
+}
+
+export function normalizePaymentEvidenceUploadMimeType({ fileName, mimeType, contentBase64 } = {}) {
+  const extension = fileExtension(fileName);
+  const spec = UPLOAD_FILE_TYPES[extension];
+  const normalizedMimeType = normalizeWhitespace(mimeType).toLowerCase();
+
+  if (!spec) {
+    throw new Error('허용되지 않는 파일 확장자입니다. PDF, JPG, PNG, WEBP, HEIC 파일만 업로드할 수 있습니다.');
+  }
+
+  if (!spec.mimeAliases.includes(normalizedMimeType)) {
+    throw new Error('허용되지 않는 파일 형식입니다. PDF, JPG, PNG, WEBP, HEIC 파일만 업로드할 수 있습니다.');
+  }
+
+  const buffer = decodeBase64Content(contentBase64);
+  if (buffer && !spec.magic(buffer)) {
+    throw new Error('파일 내용과 확장자/MIME 형식이 일치하지 않습니다.');
+  }
+
+  if (normalizedMimeType === 'application/octet-stream' && !buffer) {
+    throw new Error('파일 형식을 확인할 수 없습니다. PDF, JPG, PNG, WEBP, HEIC 파일만 업로드할 수 있습니다.');
+  }
+
+  return {
+    extension,
+    mimeType: spec.mimeType,
+  };
 }
 
 function addDaysIso(timestamp, days) {
@@ -304,10 +411,10 @@ export function assertPaymentEvidenceUploadPolicy({
   fileName,
   mimeType,
   fileSize,
+  contentBase64,
   maxBytes = PAYMENT_EVIDENCE_DEFAULT_MAX_UPLOAD_BYTES,
 }) {
   const normalizedFileName = normalizeWhitespace(fileName);
-  const normalizedMimeType = normalizeWhitespace(mimeType).toLowerCase();
   const normalizedFileSize = Number(fileSize);
   const normalizedMaxBytes = Number.isFinite(Number(maxBytes)) && Number(maxBytes) > 0
     ? Number(maxBytes)
@@ -316,15 +423,18 @@ export function assertPaymentEvidenceUploadPolicy({
   if (!normalizedFileName) {
     throw new Error('파일명이 필요합니다.');
   }
-  if (!PAYMENT_EVIDENCE_ALLOWED_UPLOAD_MIME_TYPES.includes(normalizedMimeType)) {
-    throw new Error('허용되지 않는 파일 형식입니다. PDF, JPG, PNG, WEBP, HEIC 파일만 업로드할 수 있습니다.');
-  }
+  const normalizedUpload = normalizePaymentEvidenceUploadMimeType({
+    fileName: normalizedFileName,
+    mimeType,
+    contentBase64,
+  });
   if (!Number.isInteger(normalizedFileSize) || normalizedFileSize <= 0) {
     throw new Error('파일 크기가 올바르지 않습니다.');
   }
   if (normalizedFileSize > normalizedMaxBytes) {
     throw new Error(`파일 크기는 ${Math.floor(normalizedMaxBytes / 1024 / 1024)}MB 이하여야 합니다.`);
   }
+  return normalizedUpload;
 }
 
 export function createPaymentEvidenceSubmissionToken({

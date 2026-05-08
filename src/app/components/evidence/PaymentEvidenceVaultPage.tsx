@@ -2041,7 +2041,7 @@ export function PaymentEvidenceVaultPage() {
         ref={fileInputRef}
         type="file"
         className="hidden"
-        accept="application/pdf,image/*"
+        accept="application/pdf,.pdf,image/jpeg,image/jpg,.jpg,.jpeg,image/png,.png,image/webp,.webp,image/heic,.heic,image/heif,.heif"
         onChange={handleUploadFileChange}
       />
     </div>
