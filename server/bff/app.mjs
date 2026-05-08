@@ -12,6 +12,7 @@ import { createGoogleGmailService } from './google-gmail.mjs';
 import { createGoogleSheetsService } from './google-sheets.mjs';
 import { createIdempotencyService } from './idempotency.mjs';
 import { createPiiProtector } from './pii-protection.mjs';
+import { createTriDocOcrService } from './tridoc-ocr.mjs';
 import { createTurnstileVerifier } from './turnstile.mjs';
 import { createRequestId } from './utils.mjs';
 import { mountPaymentEvidenceRoutes } from './routes/payment-evidence.mjs';
@@ -220,6 +221,7 @@ export function createBffApp(options = {}) {
     driveService: options.driveService || createGoogleDriveService({ env }),
     gmailService: options.gmailService || createGoogleGmailService({ env }),
     googleSheetsService: options.googleSheetsService || createGoogleSheetsService({ env }),
+    ocrService: options.ocrService || createTriDocOcrService({ env }),
     turnstileVerifier: options.turnstileVerifier || createTurnstileVerifier(),
   });
 

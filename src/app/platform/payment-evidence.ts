@@ -18,6 +18,21 @@ export type PaymentEvidenceCaseStatus = 'blocked' | 'needs_review' | 'ready_to_a
 export type PaymentEvidenceRisk = 'high' | 'medium' | 'low';
 export type PaymentEvidenceWorkflowStatus = 'draft' | 'sent' | 'submitted' | 'approved' | 'rejected' | 'closed';
 export type PaymentEvidenceWorkflowAction = 'send_request' | 'mark_submitted' | 'approve' | 'reject' | 'close';
+export type PaymentEvidenceOcrStatus = 'COMPLETED' | 'FAILED' | 'SKIPPED' | 'BLOCKED' | string;
+export type PaymentEvidenceOcrConsistencyStatus = 'match' | 'mismatch' | 'needs_review' | string;
+
+export interface PaymentEvidenceOcrConsistency {
+  status: PaymentEvidenceOcrConsistencyStatus;
+  matched: boolean;
+  matchProbability: number;
+  documentCompleteness?: number;
+  fieldCompleteness?: number;
+  comparisonScore?: number;
+  blockerCount?: number;
+  warningCount?: number;
+  issueCodes?: string[];
+  computedAt?: string;
+}
 
 export interface PaymentEvidenceWorkflowEvent {
   id: string;
@@ -43,6 +58,13 @@ export interface PaymentEvidenceDocument {
   extractedFields: Partial<Record<PaymentEvidenceFieldKey, string>>;
   validatedFields?: Partial<Record<PaymentEvidenceFieldKey, string>>;
   parserConfidence?: number;
+  ocrStatus?: PaymentEvidenceOcrStatus;
+  ocrProvider?: string;
+  ocrExtractedAt?: string;
+  ocrDocumentTypeHint?: string;
+  ocrPredictedDocumentType?: string;
+  ocrElapsedSec?: number;
+  ocrError?: string | null;
 }
 
 export interface PaymentEvidenceCase {
@@ -88,6 +110,7 @@ export interface PaymentEvidenceCase {
   sheetSpreadsheetId?: string;
   sheetSyncStatus?: 'SYNCED' | 'FAILED' | 'PENDING';
   sheetLastSyncedAt?: string;
+  ocrConsistency?: PaymentEvidenceOcrConsistency;
   workflowEvents?: PaymentEvidenceWorkflowEvent[];
   documents: PaymentEvidenceDocument[];
 }

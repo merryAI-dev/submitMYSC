@@ -228,6 +228,11 @@ export const paymentEvidenceRejectAndReissueSchema = z.object({
   emailMessage: z.string().trim().max(4000).optional(),
 }).strict();
 
+export const paymentEvidenceOcrReprocessSchema = z.object({
+  expectedVersion: z.number().int().positive().optional(),
+  documentTypes: z.array(PAYMENT_EVIDENCE_DOCUMENT_TYPE).max(3).optional(),
+}).strict();
+
 export const paymentEvidencePublicDocumentUploadSchema = z.object({
   type: PAYMENT_EVIDENCE_DOCUMENT_TYPE,
   fileName: NON_EMPTY_STRING.max(300),

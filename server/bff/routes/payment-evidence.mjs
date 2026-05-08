@@ -35,6 +35,7 @@ import {
   paymentEvidenceDocumentUploadSchema,
   paymentEvidenceDocumentUpsertSchema,
   paymentEvidenceGoogleSheetsSyncSchema,
+  paymentEvidenceOcrReprocessSchema,
   paymentEvidencePublicDocumentUploadSchema,
   paymentEvidencePublicSubmissionSubmitSchema,
   paymentEvidenceRejectAndReissueSchema,
@@ -45,6 +46,10 @@ import {
 import { GoogleSheetsServiceError } from '../google-sheets.mjs';
 import { DriveServiceError } from '../google-drive.mjs';
 import { GoogleGmailServiceError } from '../google-gmail.mjs';
+import {
+  applyOcrResultToPaymentEvidenceDocument,
+  computePaymentEvidenceOcrConsistency,
+} from '../tridoc-ocr.mjs';
 
 const DEFAULT_PAYMENT_EVIDENCE_SHEET_NAMES = {
   cases: 'payment_evidence_cases',
@@ -381,6 +386,36 @@ function assertPaymentEvidenceUploadPolicyOrThrow(parsed) {
   }
 }
 
+function withPaymentEvidenceOcrConsistency(paymentCase) {
+  return stripUndefinedDeep({
+    ...paymentCase,
+    ocrConsistency: computePaymentEvidenceOcrConsistency(paymentCase),
+  });
+}
+
+async function applyOcrToUploadedPaymentEvidenceDocument({
+  ocrService,
+  document,
+  contentBase64,
+  mimeType,
+}) {
+  if (!ocrService || typeof ocrService.extractDocument !== 'function') {
+    return document;
+  }
+  const ocrResult = await ocrService.extractDocument({
+    documentType: document.type,
+    fileName: document.fileName,
+    mimeType,
+    contentBase64,
+  });
+  return stripUndefinedDeep(applyOcrResultToPaymentEvidenceDocument(document, ocrResult));
+}
+
+function shouldReprocessDocumentType(document, documentTypes) {
+  if (!Array.isArray(documentTypes) || !documentTypes.length) return true;
+  return documentTypes.includes(document?.type);
+}
+
 async function verifyPaymentEvidenceTurnstileOrThrow({ turnstileVerifier, token, req }) {
   if (!turnstileVerifier || typeof turnstileVerifier.verify !== 'function') {
     throw createHttpError(503, 'Cloudflare Turnstile verification is not configured', 'turnstile_not_configured');
@@ -400,7 +435,7 @@ async function verifyPaymentEvidenceTurnstileOrThrow({ turnstileVerifier, token,
 }
 
 export function mountPaymentEvidenceRoutes(app, {
-  db, now, idempotencyService, auditChainService, piiProtector, googleSheetsService, driveService, gmailService, turnstileVerifier,
+  db, now, idempotencyService, auditChainService, piiProtector, googleSheetsService, driveService, gmailService, ocrService, turnstileVerifier,
 }) {
   app.get('/api/v1/payment-evidence/cases', asyncHandler(async (req, res) => {
     const { tenantId } = req.context;
@@ -421,6 +456,7 @@ export function mountPaymentEvidenceRoutes(app, {
       const data = { id: doc.id, ...doc.data() };
       return {
         ...data,
+        ocrConsistency: data.ocrConsistency || computePaymentEvidenceOcrConsistency(data),
         evaluation: evaluatePaymentEvidenceCase(data),
       };
     });
@@ -437,7 +473,10 @@ export function mountPaymentEvidenceRoutes(app, {
     res.status(200).json({
       id: paymentCase.id,
       tenantId,
-      case: paymentCase,
+      case: {
+        ...paymentCase,
+        ocrConsistency: paymentCase.ocrConsistency || computePaymentEvidenceOcrConsistency(paymentCase),
+      },
       evaluation: evaluatePaymentEvidenceCase(paymentCase),
       version: paymentCase.version,
       updatedAt: paymentCase.updatedAt || null,
@@ -600,7 +639,7 @@ export function mountPaymentEvidenceRoutes(app, {
       }
 
       const nextVersion = currentVersion + 1;
-      const nextCase = stripUndefinedDeep({
+      const nextCase = withPaymentEvidenceOcrConsistency({
         ...current,
         documents,
         tenantId,
@@ -689,10 +728,16 @@ export function mountPaymentEvidenceRoutes(app, {
       throw error;
     }
 
-    const document = normalizeDocument({
+    const baseDocument = normalizeDocument({
       ...parsed,
       driveFileId: uploadedFile.id,
       webViewLink: uploadedFile.webViewLink || undefined,
+    });
+    const document = await applyOcrToUploadedPaymentEvidenceDocument({
+      ocrService,
+      document: baseDocument,
+      contentBase64: parsed.contentBase64,
+      mimeType: parsed.mimeType,
     });
 
     const outboxEvent = createOutboxEvent({
@@ -729,7 +774,7 @@ export function mountPaymentEvidenceRoutes(app, {
       }
 
       const nextVersion = latestVersion + 1;
-      const nextCase = stripUndefinedDeep({
+      const nextCase = withPaymentEvidenceOcrConsistency({
         ...latest,
         documents,
         evidenceDriveSharedDriveId: folderResult.folder.driveId || latest.evidenceDriveSharedDriveId || undefined,
@@ -782,6 +827,134 @@ export function mountPaymentEvidenceRoutes(app, {
           mimeType: uploadedFile.mimeType || parsed.mimeType,
         },
         evaluation: evaluatePaymentEvidenceCase(result.nextCase),
+        version: result.nextVersion,
+        updatedAt: result.nextCase.updatedAt,
+      },
+    };
+  }));
+
+  app.post('/api/v1/payment-evidence/cases/:caseId/ocr/reprocess', createMutatingRoute(idempotencyService, async (req) => {
+    assertActorRoleAllowed(req, ROUTE_ROLES.paymentEvidenceWrite, 'reprocess payment evidence OCR');
+    const { tenantId, actorId, actorRole, actorEmail, requestId } = req.context;
+    const { caseId } = req.params;
+    const timestamp = now();
+    const parsed = parseWithSchema(paymentEvidenceOcrReprocessSchema, req.body || {}, 'Invalid payment evidence OCR reprocess payload');
+    requireDrivePreviewService(driveService);
+
+    const caseRef = db.doc(paymentEvidenceCasePath(tenantId, caseId));
+    const caseSnap = await caseRef.get();
+    if (!caseSnap.exists) throw createHttpError(404, `Payment evidence case not found: ${caseId}`, 'not_found');
+    const currentCase = { id: caseSnap.id, ...caseSnap.data() };
+    const currentVersion = currentVersionOf(currentCase);
+    if (parsed.expectedVersion !== undefined && parsed.expectedVersion !== currentVersion) {
+      throw createHttpError(409, `Version mismatch: expected ${parsed.expectedVersion}, actual ${currentVersion}`, 'version_conflict');
+    }
+
+    const selectedTypes = Array.isArray(parsed.documentTypes) ? Array.from(new Set(parsed.documentTypes)) : [];
+    const reprocessedDocuments = [];
+    for (const existingDocument of currentCase.documents || []) {
+      if (!shouldReprocessDocumentType(existingDocument, selectedTypes)) {
+        reprocessedDocuments.push(existingDocument);
+        continue;
+      }
+      if (!existingDocument.driveFileId) {
+        reprocessedDocuments.push(stripUndefinedDeep(applyOcrResultToPaymentEvidenceDocument(existingDocument, {
+          status: 'SKIPPED',
+          reason: 'drive_file_missing',
+          extractedFields: {},
+          parserConfidence: 0,
+          extractedAt: timestamp,
+        })));
+        continue;
+      }
+
+      let downloaded;
+      try {
+        downloaded = await driveService.downloadFileContent({
+          fileId: existingDocument.driveFileId,
+          maxBytes: resolvePaymentEvidenceMaxUploadBytes(),
+        });
+      } catch (error) {
+        reprocessedDocuments.push(stripUndefinedDeep(applyOcrResultToPaymentEvidenceDocument(existingDocument, {
+          status: 'FAILED',
+          reason: error instanceof DriveServiceError ? error.code : 'drive_download_failed',
+          error: error instanceof DriveServiceError ? error.code : 'drive_download_failed',
+          extractedFields: {},
+          parserConfidence: 0,
+          extractedAt: timestamp,
+        })));
+        continue;
+      }
+
+      reprocessedDocuments.push(await applyOcrToUploadedPaymentEvidenceDocument({
+        ocrService,
+        document: existingDocument,
+        contentBase64: downloaded.contentBase64,
+        mimeType: downloaded.mimeType || existingDocument.mimeType || downloaded.file?.mimeType || '',
+      }));
+    }
+
+    const outboxEvent = createOutboxEvent({
+      tenantId,
+      requestId,
+      eventType: 'payment_evidence.ocr.reprocessed',
+      entityType: 'payment_evidence_case',
+      entityId: caseId,
+      payload: {
+        documentTypes: selectedTypes.length ? selectedTypes : ['all'],
+      },
+      createdAt: timestamp,
+    });
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(caseRef);
+      if (!snap.exists) throw createHttpError(404, `Payment evidence case not found: ${caseId}`, 'not_found');
+      const latest = { id: snap.id, ...snap.data() };
+      const latestVersion = currentVersionOf(latest);
+      if (parsed.expectedVersion !== undefined && parsed.expectedVersion !== latestVersion) {
+        throw createHttpError(409, `Version mismatch: expected ${parsed.expectedVersion}, actual ${latestVersion}`, 'version_conflict');
+      }
+      if (parsed.expectedVersion === undefined && latestVersion !== currentVersion) {
+        throw createHttpError(409, `Version mismatch: expected ${currentVersion}, actual ${latestVersion}`, 'version_conflict');
+      }
+
+      const nextVersion = latestVersion + 1;
+      const nextCase = withPaymentEvidenceOcrConsistency({
+        ...latest,
+        documents: reprocessedDocuments,
+        tenantId,
+        version: nextVersion,
+        updatedBy: actorId,
+        updatedAt: timestamp,
+      });
+      tx.set(caseRef, nextCase, { merge: true });
+      enqueueOutboxEventInTransaction(tx, db, outboxEvent);
+      return { nextCase, nextVersion };
+    });
+
+    const actorEmailEnc = await encryptAuditEmail(piiProtector, actorEmail);
+    await auditChainService.append({
+      tenantId,
+      entityType: 'payment_evidence_case',
+      entityId: caseId,
+      action: 'OCR_REPROCESS',
+      actorId,
+      actorRole,
+      actorEmailEnc,
+      requestId,
+      details: `지급증빙 OCR 재검증: ${caseId}`,
+      metadata: { source: 'bff', version: result.nextVersion, outboxId: outboxEvent.id },
+      timestamp,
+    });
+
+    return {
+      status: 200,
+      body: {
+        id: caseId,
+        tenantId,
+        case: result.nextCase,
+        evaluation: evaluatePaymentEvidenceCase(result.nextCase),
+        ocrConsistency: result.nextCase.ocrConsistency,
         version: result.nextVersion,
         updatedAt: result.nextCase.updatedAt,
       },
@@ -1323,12 +1496,18 @@ export function mountPaymentEvidenceRoutes(app, {
       throw error;
     }
 
-    const document = normalizeDocument({
+    const baseDocument = normalizeDocument({
       ...parsed,
       sha256,
       driveFileId: uploadedFile.id,
       webViewLink: uploadedFile.webViewLink || undefined,
       source: 'external_upload',
+    });
+    const document = await applyOcrToUploadedPaymentEvidenceDocument({
+      ocrService,
+      document: baseDocument,
+      contentBase64: parsed.contentBase64,
+      mimeType: parsed.mimeType,
     });
     const outboxEvent = createOutboxEvent({
       tenantId: tokenRecord.tenantId,
@@ -1361,7 +1540,7 @@ export function mountPaymentEvidenceRoutes(app, {
         at: timestamp,
       });
       const nextVersion = latestVersion + 1;
-      const nextCase = stripUndefinedDeep({
+      const nextCase = withPaymentEvidenceOcrConsistency({
         ...applied.paymentCase,
         evidenceDriveSharedDriveId: folderResult.folder.driveId || latest.evidenceDriveSharedDriveId || undefined,
         evidenceDriveFolderId: folderResult.folder.id,

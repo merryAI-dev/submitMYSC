@@ -317,6 +317,10 @@ export interface PaymentEvidenceWorkflowActionResult extends PaymentEvidenceCase
   sheetRows?: unknown;
 }
 
+export interface PaymentEvidenceOcrReprocessResult extends PaymentEvidenceCaseMutationResult {
+  ocrConsistency?: PaymentEvidenceCase['ocrConsistency'];
+}
+
 export interface PaymentEvidenceSheetsSyncResult {
   caseId: string;
   tenantId?: string;
@@ -1094,6 +1098,31 @@ export async function uploadPaymentEvidenceDocumentViaBff(params: {
       body: params.upload,
       retries: 0,
       timeoutMs: 45000,
+    },
+  );
+  return response.data;
+}
+
+export async function reprocessPaymentEvidenceOcrViaBff(params: {
+  tenantId: string;
+  actor: ActorLike;
+  caseId: string;
+  expectedVersion?: number;
+  documentTypes?: PaymentEvidenceDocumentType[];
+  client?: PlatformApiClientLike;
+}): Promise<PaymentEvidenceOcrReprocessResult> {
+  const apiClient = resolveClient(params.client);
+  const response = await apiClient.post<PaymentEvidenceOcrReprocessResult>(
+    `/api/v1/payment-evidence/cases/${params.caseId}/ocr/reprocess`,
+    {
+      tenantId: params.tenantId,
+      actor: toRequestActor(params.actor),
+      body: {
+        expectedVersion: params.expectedVersion,
+        documentTypes: params.documentTypes,
+      },
+      retries: 0,
+      timeoutMs: 90000,
     },
   );
   return response.data;

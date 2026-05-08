@@ -64,6 +64,7 @@ import {
   fetchPaymentEvidenceDocumentPreviewViaBff,
   fetchPaymentEvidenceCasesViaBff,
   isPlatformApiEnabled,
+  reprocessPaymentEvidenceOcrViaBff,
   rejectAndReissuePaymentEvidenceCaseViaBff,
   revokePaymentEvidenceSubmissionLinkViaBff,
   runPaymentEvidenceWorkflowActionViaBff,
@@ -239,6 +240,11 @@ function formatWon(value: number): string {
   return `${value.toLocaleString()}원`;
 }
 
+function formatPercent(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
+  return `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%`;
+}
+
 function formatDateTime(value?: string): string {
   if (!value) return '-';
   const date = new Date(value);
@@ -249,6 +255,22 @@ function formatDateTime(value?: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function ocrStatusLabel(status?: string): string {
+  if (status === 'COMPLETED') return 'OCR 완료';
+  if (status === 'FAILED') return 'OCR 실패';
+  if (status === 'SKIPPED') return 'OCR 제외';
+  if (status === 'BLOCKED') return 'OCR 차단';
+  return 'OCR 대기';
+}
+
+function ocrStatusClass(status?: string): string {
+  if (status === 'COMPLETED') return 'text-emerald-700';
+  if (status === 'FAILED') return 'text-rose-700';
+  if (status === 'BLOCKED') return 'text-rose-700';
+  if (status === 'SKIPPED') return 'text-amber-700';
+  return 'text-muted-foreground';
 }
 
 function resolveCaseSortScore(paymentCase: PaymentEvidenceCase): number {
@@ -365,8 +387,10 @@ function DocumentChecklist({
               )}
             </div>
             <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-[10px] text-muted-foreground">
-                {document?.parserConfidence !== undefined ? `OCR ${(document.parserConfidence * 100).toFixed(0)}%` : '-'}
+              <span className={`min-w-0 truncate text-[10px] ${ocrStatusClass(document?.ocrStatus)}`}>
+                {document
+                  ? `${ocrStatusLabel(document.ocrStatus)} · ${formatPercent(document.parserConfidence)}`
+                  : '-'}
               </span>
               <div className="flex items-center gap-1.5">
                 <Button
@@ -665,29 +689,93 @@ function SubmissionLinkPanel({
   );
 }
 
+function OcrConsistencyPanel({
+  paymentCase,
+  platformApiActive,
+  busy,
+  onReprocess,
+}: {
+  paymentCase: PaymentEvidenceCase;
+  platformApiActive: boolean;
+  busy?: boolean;
+  onReprocess: (paymentCase: PaymentEvidenceCase) => void;
+}) {
+  const consistency = paymentCase.ocrConsistency;
+  const probability = consistency?.matchProbability;
+  const statusText = consistency?.matched
+    ? '일치'
+    : consistency?.status === 'mismatch'
+      ? '불일치'
+      : consistency
+        ? '검수 필요'
+        : '미처리';
+
+  return (
+    <div className="rounded-lg border bg-background p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[11px]" style={{ fontWeight: 700 }}>OCR 정합성</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            VLLM 추출값 기준 일치 확률 {formatPercent(probability)} · {statusText}
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 px-2 text-[11px]"
+          disabled={!platformApiActive || busy}
+          onClick={() => onReprocess(paymentCase)}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+          OCR 재검증
+        </Button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <div className="rounded border bg-muted/20 px-2 py-1.5">
+          <p className="text-[10px] text-muted-foreground">문서 충족</p>
+          <p className="text-[12px]" style={{ fontWeight: 800 }}>{formatPercent(consistency?.documentCompleteness)}</p>
+        </div>
+        <div className="rounded border bg-muted/20 px-2 py-1.5">
+          <p className="text-[10px] text-muted-foreground">필드 충족</p>
+          <p className="text-[12px]" style={{ fontWeight: 800 }}>{formatPercent(consistency?.fieldCompleteness)}</p>
+        </div>
+        <div className="rounded border bg-muted/20 px-2 py-1.5">
+          <p className="text-[10px] text-muted-foreground">교차 일치</p>
+          <p className="text-[12px]" style={{ fontWeight: 800 }}>{formatPercent(consistency?.comparisonScore)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CaseDetail({
   paymentCase,
   onActionRequest,
   onUploadRequest,
   onPreviewRequest,
+  onOcrReprocess,
   onCreateSubmissionLink,
   onCopySubmissionLink,
   onRevokeSubmissionLink,
   submissionUrl,
   platformApiActive,
   linkBusy,
+  ocrBusy,
   uploadDisabled,
 }: {
   paymentCase: PaymentEvidenceCase;
   onActionRequest: (paymentCase: PaymentEvidenceCase, action: PaymentEvidenceWorkflowAction) => void;
   onUploadRequest: (paymentCase: PaymentEvidenceCase, type: PaymentEvidenceDocumentType) => void;
   onPreviewRequest: (paymentCase: PaymentEvidenceCase, documentId: string) => void;
+  onOcrReprocess: (paymentCase: PaymentEvidenceCase) => void;
   onCreateSubmissionLink: (paymentCase: PaymentEvidenceCase) => void;
   onCopySubmissionLink: (paymentCase: PaymentEvidenceCase) => void;
   onRevokeSubmissionLink: (paymentCase: PaymentEvidenceCase) => void;
   submissionUrl?: string;
   platformApiActive: boolean;
   linkBusy: boolean;
+  ocrBusy?: boolean;
   uploadDisabled?: boolean;
 }) {
   const result = evaluatePaymentEvidenceCase(paymentCase);
@@ -722,6 +810,12 @@ function CaseDetail({
             onRevokeSubmissionLink={onRevokeSubmissionLink}
           />
           <WorkflowPanel paymentCase={paymentCase} onActionRequest={onActionRequest} />
+          <OcrConsistencyPanel
+            paymentCase={paymentCase}
+            platformApiActive={platformApiActive}
+            busy={ocrBusy}
+            onReprocess={onOcrReprocess}
+          />
           <DocumentChecklist
             paymentCase={paymentCase}
             uploadDisabled={uploadDisabled}
@@ -823,6 +917,7 @@ export function PaymentEvidenceVaultPage() {
   const [linkBusy, setLinkBusy] = useState(false);
   const [requestBusy, setRequestBusy] = useState(false);
   const [requestForm, setRequestForm] = useState<SubmissionRequestFormState>(() => buildInitialRequestForm(currentUser.email));
+  const [ocrBusy, setOcrBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [submissionLinks, setSubmissionLinks] = useState<Record<string, string>>({});
   const [uploadTarget, setUploadTarget] = useState<{
@@ -1296,6 +1391,30 @@ export function PaymentEvidenceVaultPage() {
     }
   }
 
+  async function handleOcrReprocess(paymentCase: PaymentEvidenceCase) {
+    if (!platformApiActive) {
+      toast.error('BFF 저장 모드에서만 OCR 재검증을 사용할 수 있습니다.');
+      return;
+    }
+    try {
+      setOcrBusy(true);
+      const result = await reprocessPaymentEvidenceOcrViaBff({
+        tenantId: orgId,
+        actor: bffActor,
+        caseId: paymentCase.id,
+        expectedVersion: paymentCase.version || 1,
+      });
+      setCases((prev) => prev.map((candidate) => (
+        candidate.id === result.case.id ? result.case : candidate
+      )));
+      toast.success(`OCR 재검증 완료 · 일치 확률 ${formatPercent(result.case.ocrConsistency?.matchProbability)}`);
+    } catch (error) {
+      toast.error(resolveApiErrorMessage(error, 'OCR 재검증을 완료하지 못했습니다.'));
+    } finally {
+      setOcrBusy(false);
+    }
+  }
+
   async function handleWorkflowAction() {
     if (!actionDialog || !actionTarget) return;
     if (actionDialog.action === 'reject' && !actionNote.trim()) return;
@@ -1689,6 +1808,7 @@ export function PaymentEvidenceVaultPage() {
                     <TableHead className="text-[10px]">문서</TableHead>
                     <TableHead className="text-[10px]">진행</TableHead>
                     <TableHead className="text-[10px]">상태</TableHead>
+                    <TableHead className="text-[10px]">OCR</TableHead>
                     <TableHead className="text-[10px]">이슈</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1730,6 +1850,9 @@ export function PaymentEvidenceVaultPage() {
                         <TableCell className="py-1">
                           <StatusBadge status={result.status} />
                         </TableCell>
+                        <TableCell className="py-1 text-[11px]" style={{ fontWeight: 700 }}>
+                          {formatPercent(paymentCase.ocrConsistency?.matchProbability)}
+                        </TableCell>
                         <TableCell className="py-1">
                           <div className="flex items-center gap-1.5">
                             <RiskBadge risk={result.risk} />
@@ -1751,12 +1874,14 @@ export function PaymentEvidenceVaultPage() {
             onActionRequest={openActionDialog}
             onUploadRequest={openUploadDialog}
             onPreviewRequest={openPreviewDialog}
+            onOcrReprocess={handleOcrReprocess}
             onCreateSubmissionLink={handleCreateSubmissionLink}
             onCopySubmissionLink={handleCopySubmissionLink}
             onRevokeSubmissionLink={handleRevokeSubmissionLink}
             submissionUrl={submissionLinks[selectedCase.id]}
             platformApiActive={platformApiActive}
             linkBusy={linkBusy}
+            ocrBusy={ocrBusy}
             uploadDisabled={uploadBusy || !platformApiActive}
           />
         ) : (
