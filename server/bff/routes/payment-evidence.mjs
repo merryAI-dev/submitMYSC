@@ -179,10 +179,36 @@ function assertSubmissionTokenUsable(tokenRecord, timestamp, { allowUsed = false
   throw createHttpError(status, state.reason || '제출 링크를 사용할 수 없습니다.', `submission_token_${state.status}`);
 }
 
+function resolvePublicSubmissionTenantId(env = process.env) {
+  return readOptionalText(env.PAYMENT_EVIDENCE_PUBLIC_TENANT_ID)
+    || readOptionalText(env.VITE_DEFAULT_ORG_ID)
+    || 'mysc';
+}
+
+function parseSubmissionTokenId(rawToken) {
+  const normalized = readOptionalText(rawToken);
+  const separatorIndex = normalized.indexOf('.');
+  return separatorIndex > 0 ? normalized.slice(0, separatorIndex) : '';
+}
+
 async function lookupSubmissionTokenByRawToken({ db, rawToken, timestamp, allowUsed = false }) {
   const normalizedToken = readOptionalText(rawToken);
   if (!normalizedToken) throw createHttpError(400, 'submission token is required', 'submission_token_required');
   const tokenHash = hashPaymentEvidenceSubmissionToken(normalizedToken);
+  const tokenId = parseSubmissionTokenId(normalizedToken);
+  const defaultTenantId = resolvePublicSubmissionTenantId();
+  if (tokenId && defaultTenantId) {
+    const directRef = db.doc(paymentEvidenceTokenPath(defaultTenantId, tokenId));
+    const directSnap = await directRef.get();
+    if (directSnap.exists) {
+      const directRecord = { id: directSnap.id, ...directSnap.data() };
+      if (directRecord.tokenHash === tokenHash) {
+        const tokenState = assertSubmissionTokenUsable(directRecord, timestamp, { allowUsed });
+        return { tokenRef: directRef, tokenRecord: directRecord, tokenState };
+      }
+    }
+  }
+
   if (typeof db.collectionGroup !== 'function') {
     throw createHttpError(503, 'Submission token lookup is not configured', 'submission_token_lookup_not_configured');
   }
