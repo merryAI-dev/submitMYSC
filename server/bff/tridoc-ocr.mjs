@@ -296,6 +296,18 @@ function countComparableMatches(fieldComparisons = []) {
   };
 }
 
+function capMatchProbabilityByIssues(probability, issueCodes = []) {
+  let cap = 1;
+  if (issueCodes.includes('identity_mismatch')) cap = Math.min(cap, 0.2);
+  if (issueCodes.some((code) => code.startsWith('document_type_mismatch:'))) cap = Math.min(cap, 0.4);
+  return roundProbability(Math.min(probability, cap));
+}
+
+function hasLowConfidenceIssue(issueCodes = []) {
+  return issueCodes.includes('identity_mismatch')
+    || issueCodes.some((code) => code.startsWith('document_type_mismatch:'));
+}
+
 export function computePaymentEvidenceOcrConsistency(paymentCase) {
   const documents = Array.isArray(paymentCase?.documents) ? paymentCase.documents : [];
   const presentDocumentTypes = new Set(documents.map((document) => document.type));
@@ -313,13 +325,20 @@ export function computePaymentEvidenceOcrConsistency(paymentCase) {
     + comparisonScore * 0.3
     - blockerPenalty
   );
-  const matchProbability = roundProbability(rawProbability);
+  const issueCodes = evaluation.issues.map((issue) => issue.code);
+  const matchProbability = capMatchProbabilityByIssues(roundProbability(rawProbability), issueCodes);
   const matched = evaluation.blockerCount === 0
     && evaluation.missingDocumentTypes.length === 0
     && matchProbability >= 0.85;
 
   return {
-    status: matched ? 'match' : evaluation.blockerCount > 0 ? 'mismatch' : 'needs_review',
+    status: matched
+      ? 'match'
+      : evaluation.blockerCount > 0
+        ? 'mismatch'
+        : hasLowConfidenceIssue(issueCodes)
+          ? 'low_confidence'
+          : 'needs_review',
     matched,
     matchProbability,
     documentCompleteness: roundProbability(documentCompleteness),
@@ -327,7 +346,7 @@ export function computePaymentEvidenceOcrConsistency(paymentCase) {
     comparisonScore: roundProbability(comparisonScore),
     blockerCount: evaluation.blockerCount,
     warningCount: evaluation.warningCount,
-    issueCodes: evaluation.issues.map((issue) => issue.code),
+    issueCodes,
     computedAt: new Date().toISOString(),
   };
 }

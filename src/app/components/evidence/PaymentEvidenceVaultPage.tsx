@@ -85,8 +85,10 @@ import {
   type PaymentEvidenceCase,
   type PaymentEvidenceCaseStatus,
   type PaymentEvidenceDocumentType,
+  type PaymentEvidenceEvaluation,
   type PaymentEvidenceFieldComparison,
   type PaymentEvidenceRisk,
+  type PaymentEvidenceValidationCluster,
   type PaymentEvidenceWorkflowAction,
   type PaymentEvidenceWorkflowStatus,
 } from '../../platform/payment-evidence';
@@ -704,20 +706,22 @@ function OcrConsistencyPanel({
   const consistency = paymentCase.ocrConsistency;
   const probability = consistency?.matchProbability;
   const statusText = consistency?.matched
-    ? '일치'
-    : consistency?.status === 'mismatch'
-      ? '불일치'
-      : consistency
-        ? '검수 필요'
-        : '미처리';
+    ? '승인 근거 확보'
+    : consistency?.status === 'low_confidence'
+      ? '정합도 낮음'
+      : consistency?.status === 'mismatch'
+        ? '불일치'
+        : consistency
+          ? '검수 필요'
+          : '미처리';
 
   return (
     <div className="rounded-lg border bg-background p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-[11px]" style={{ fontWeight: 700 }}>OCR 정합성</p>
+          <p className="text-[11px]" style={{ fontWeight: 700 }}>자동검증</p>
           <p className="mt-1 text-[10px] text-muted-foreground">
-            VLLM 추출값 기준 일치 확률 {formatPercent(probability)} · {statusText}
+            VLLM 추출값 기준 자동 점검 지표 {formatPercent(probability)} · {statusText}
           </p>
         </div>
         <Button
@@ -742,9 +746,101 @@ function OcrConsistencyPanel({
           <p className="text-[12px]" style={{ fontWeight: 800 }}>{formatPercent(consistency?.fieldCompleteness)}</p>
         </div>
         <div className="rounded border bg-muted/20 px-2 py-1.5">
-          <p className="text-[10px] text-muted-foreground">교차 일치</p>
+          <p className="text-[10px] text-muted-foreground">근거 일관성</p>
           <p className="text-[12px]" style={{ fontWeight: 800 }}>{formatPercent(consistency?.comparisonScore)}</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function validationClusterDisplay(cluster: PaymentEvidenceValidationCluster) {
+  const lowConfidence = cluster.issueCodes.some((code) => (
+    code === 'identity_mismatch' || code.startsWith('document_type_mismatch:')
+  ));
+  if (cluster.status === 'blocked') {
+    return {
+      label: '불일치',
+      className: 'border-rose-200 bg-rose-50 text-rose-700',
+    };
+  }
+  if (lowConfidence) {
+    return {
+      label: '정합도 낮음',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+  if (cluster.status === 'needs_review') {
+    return {
+      label: '검수 필요',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+  return {
+    label: '통과',
+    className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  };
+}
+
+function evidenceSummary(cluster: PaymentEvidenceValidationCluster) {
+  const present = cluster.evidence.filter((fact) => fact.value);
+  if (!present.length) return '확인 가능한 값 없음';
+  return present
+    .slice(0, 4)
+    .map((fact) => `${fact.label} ${fact.value}`)
+    .join(' / ');
+}
+
+function ValidationClusterPanel({ result }: { result: PaymentEvidenceEvaluation }) {
+  const clusters = result.validationClusters || [];
+  if (!clusters.length) {
+    return (
+      <div className="rounded-lg border bg-background">
+        <div className="border-b px-3 py-2">
+          <p className="text-[11px]" style={{ fontWeight: 700 }}>검증 근거</p>
+        </div>
+        <div className="divide-y">
+          {result.fieldComparisons.map((comparison) => {
+            const display = comparisonDisplay(comparison);
+            return (
+              <div key={comparison.key} className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[100px_minmax(0,1fr)_72px]">
+                <span className="text-muted-foreground">{comparison.label}</span>
+                <span className="min-w-0 truncate">{comparisonValues(comparison)}</span>
+                <span className={display.className} style={{ fontWeight: 700 }}>
+                  {display.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border bg-background">
+      <div className="border-b px-3 py-2">
+        <p className="text-[11px]" style={{ fontWeight: 700 }}>검증 근거</p>
+      </div>
+      <div className="divide-y">
+        {clusters.map((cluster) => {
+          const display = validationClusterDisplay(cluster);
+          const primaryIssue = cluster.issues.find((issue) => issue.severity === 'blocker') || cluster.issues[0];
+          return (
+            <div key={cluster.id} className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[104px_minmax(0,1fr)_76px]">
+              <span className="text-muted-foreground">{cluster.label}</span>
+              <span className="min-w-0 leading-5">
+                <span className="block truncate">{primaryIssue?.label || evidenceSummary(cluster)}</span>
+                {primaryIssue?.detail ? (
+                  <span className="block truncate text-[10px] text-muted-foreground">{primaryIssue.detail}</span>
+                ) : null}
+              </span>
+              <span className={`rounded border px-2 py-1 text-center text-[10px] ${display.className}`} style={{ fontWeight: 800 }}>
+                {display.label}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -851,27 +947,7 @@ function CaseDetail({
           />
 
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_280px]">
-            <div className="rounded-lg border bg-background">
-              <div className="border-b px-3 py-2">
-                <p className="text-[11px]" style={{ fontWeight: 700 }}>교차검증</p>
-              </div>
-              <div className="divide-y">
-                {result.fieldComparisons.map((comparison) => (
-                  (() => {
-                    const display = comparisonDisplay(comparison);
-                    return (
-                      <div key={comparison.key} className="grid gap-2 px-3 py-2 text-[11px] sm:grid-cols-[100px_minmax(0,1fr)_72px]">
-                        <span className="text-muted-foreground">{comparison.label}</span>
-                        <span className="min-w-0 truncate">{comparisonValues(comparison)}</span>
-                        <span className={display.className} style={{ fontWeight: 700 }}>
-                          {display.label}
-                        </span>
-                      </div>
-                    );
-                  })()
-                ))}
-              </div>
-            </div>
+            <ValidationClusterPanel result={result} />
 
             <div className="rounded-lg border bg-muted/20 p-3">
               <div className="flex items-center gap-2">
