@@ -61,6 +61,14 @@ const REQUIRED_FIELDS_BY_DOCUMENT = {
   bankbook: ['bank', 'account_number', 'account_holder'],
 };
 
+const PAYMENT_EVIDENCE_VALIDATION_CLUSTER_LABELS = {
+  document_type: '문서 종류',
+  identity: '지급 대상',
+  resident_registration_number: '주민등록번호',
+  bank_account: '계좌 정보',
+  payment: '지급 정보',
+};
+
 function normalizeWhitespace(value) {
   return String(value || '').normalize('NFC').replace(/\s+/g, ' ').trim();
 }
@@ -190,6 +198,11 @@ function normalizeDigitsAndMask(value) {
   return normalizeWhitespace(value).replace(/[^\d*]/g, '');
 }
 
+function normalizeKnownDocumentType(value) {
+  const normalized = normalizeWhitespace(value).toLowerCase();
+  return PAYMENT_EVIDENCE_DOCUMENT_TYPES.includes(normalized) ? normalized : '';
+}
+
 function parseAmount(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   const normalized = normalizeWhitespace(value).replace(/[^\d.-]/g, '');
@@ -230,6 +243,17 @@ function hasValidatedField(document, fieldKey) {
 
 function hasDraftField(document, fieldKey) {
   return normalizeWhitespace(document?.extractedFields?.[fieldKey] || '').length > 0;
+}
+
+function evidenceFact(source, label, value, extra = {}) {
+  const normalizedValue = normalizeWhitespace(value);
+  return {
+    source,
+    label,
+    value: normalizedValue,
+    status: normalizedValue ? 'present' : 'missing',
+    ...extra,
+  };
 }
 
 function compareText(valueA, valueB) {
@@ -273,6 +297,50 @@ function buildFieldComparison({
   };
 }
 
+function presentEvidenceFacts(evidence) {
+  return evidence.filter((fact) => normalizeWhitespace(fact.value));
+}
+
+function uniqueComparableTextValues(evidence) {
+  const unique = new Map();
+  presentEvidenceFacts(evidence).forEach((fact) => {
+    const comparable = normalizeComparableText(fact.value);
+    if (!comparable) return;
+    if (!unique.has(comparable)) unique.set(comparable, []);
+    unique.get(comparable).push(fact);
+  });
+  return unique;
+}
+
+function formatEvidenceFacts(evidence) {
+  return presentEvidenceFacts(evidence)
+    .map((fact) => `${fact.label}(${fact.value})`)
+    .join(', ');
+}
+
+function buildValidationCluster({ id, evidence, issues }) {
+  const clusterIssues = issues.filter((issue) => issue.cluster === id);
+  const blockerCount = clusterIssues.filter((issue) => issue.severity === 'blocker').length;
+  const warningCount = clusterIssues.filter((issue) => issue.severity === 'warning').length;
+  return {
+    id,
+    label: PAYMENT_EVIDENCE_VALIDATION_CLUSTER_LABELS[id] || id,
+    status: blockerCount > 0 ? 'blocked' : warningCount > 0 ? 'needs_review' : 'passed',
+    evidence,
+    issueCodes: clusterIssues.map((issue) => issue.code),
+    issues: clusterIssues,
+  };
+}
+
+function validationClusterForField(documentType, fieldKey) {
+  if (fieldKey === 'resident_registration_number') return 'resident_registration_number';
+  if (fieldKey === 'name' || fieldKey === 'account_holder') return 'identity';
+  if (fieldKey === 'bank' || fieldKey === 'account_number') return 'bank_account';
+  if (fieldKey === 'amount' || fieldKey === 'income_type' || fieldKey === 'signature_present' || fieldKey === 'signed_date') return 'payment';
+  if (fieldKey === 'id_type') return 'document_type';
+  return documentType === 'bankbook' ? 'bank_account' : 'payment';
+}
+
 function addIssue(issues, issue) {
   issues.push(issue);
 }
@@ -290,10 +358,23 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
       label: `${PAYMENT_EVIDENCE_DOCUMENT_LABELS[type]} 누락`,
       detail: `${paymentCase.payeeName} 케이스에 ${PAYMENT_EVIDENCE_DOCUMENT_LABELS[type]} 파일이 없습니다.`,
       documentType: type,
+      cluster: 'document_type',
     });
   });
 
   documents.forEach((document) => {
+    const predictedType = normalizeKnownDocumentType(document.ocrPredictedDocumentType);
+    if (predictedType && predictedType !== document.type) {
+      addIssue(issues, {
+        code: `document_type_mismatch:${document.type}`,
+        severity: 'warning',
+        label: `${PAYMENT_EVIDENCE_DOCUMENT_LABELS[document.type]} 문서 종류 정합도 낮음`,
+        detail: `${document.fileName || PAYMENT_EVIDENCE_DOCUMENT_LABELS[document.type]} 파일은 ${PAYMENT_EVIDENCE_DOCUMENT_LABELS[document.type]} 슬롯에 업로드됐지만 OCR은 ${PAYMENT_EVIDENCE_DOCUMENT_LABELS[predictedType]}로 판정했습니다.`,
+        documentType: document.type,
+        cluster: 'document_type',
+      });
+    }
+
     const requiredFields = REQUIRED_FIELDS_BY_DOCUMENT[document.type] || [];
     requiredFields.forEach((fieldKey) => {
       if (hasValidatedField(document, fieldKey)) return;
@@ -305,6 +386,7 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
           detail: '모델 추출값은 있으나 사람이 확정한 값이 없습니다.',
           documentType: document.type,
           fieldKey,
+          cluster: validationClusterForField(document.type, fieldKey),
         });
         return;
       }
@@ -316,6 +398,7 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
         detail: '필수 필드가 비어 있어 검수자가 원문을 확인해야 합니다.',
         documentType: document.type,
         fieldKey,
+        cluster: validationClusterForField(document.type, fieldKey),
       });
     });
   });
@@ -326,6 +409,26 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
 
   const paymentName = fieldValue(paymentDocument, 'name');
   const idName = fieldValue(idCardDocument, 'name');
+  const paymentAccountHolder = fieldValue(paymentDocument, 'account_holder');
+  const bankbookAccountHolder = fieldValue(bankbookDocument, 'account_holder');
+  const identityEvidence = [
+    evidenceFact('expected_payee_legal_name', '지급대상 실명', paymentCase.expectedPayeeLegalName),
+    evidenceFact('payment_confirmation.name', '확인서 성명', paymentName),
+    evidenceFact('payment_confirmation.account_holder', '확인서 예금주', paymentAccountHolder),
+    evidenceFact('id_card.name', '신분증 성명', idName),
+    evidenceFact('bankbook.account_holder', '통장 예금주', bankbookAccountHolder),
+  ];
+  if (uniqueComparableTextValues(identityEvidence).size > 1) {
+    addIssue(issues, {
+      code: 'identity_mismatch',
+      severity: 'warning',
+      label: '지급 대상 정합도 낮음',
+      detail: `신원/예금주 증빙 값이 서로 다릅니다: ${formatEvidenceFacts(identityEvidence)}.`,
+      fieldKey: 'name',
+      cluster: 'identity',
+    });
+  }
+
   if (!compareText(paymentName, idName)) {
     addIssue(issues, {
       code: 'name_mismatch',
@@ -333,6 +436,7 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
       label: '성명 불일치',
       detail: `비용지급확인서 성명(${paymentName})과 신분증 성명(${idName})이 다릅니다.`,
       fieldKey: 'name',
+      cluster: 'identity',
     });
   }
 
@@ -345,6 +449,7 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
       label: '주민등록번호 불일치',
       detail: '비용지급확인서와 신분증의 주민등록번호가 일치하지 않습니다.',
       fieldKey: 'resident_registration_number',
+      cluster: 'resident_registration_number',
     });
   }
 
@@ -357,11 +462,10 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
       label: '계좌번호 불일치',
       detail: '비용지급확인서 계좌번호와 통장사본 계좌번호가 다릅니다.',
       fieldKey: 'account_number',
+      cluster: 'bank_account',
     });
   }
 
-  const paymentAccountHolder = fieldValue(paymentDocument, 'account_holder');
-  const bankbookAccountHolder = fieldValue(bankbookDocument, 'account_holder');
   if (!compareText(paymentAccountHolder, bankbookAccountHolder)) {
     addIssue(issues, {
       code: 'account_holder_mismatch',
@@ -369,6 +473,7 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
       label: '예금주 불일치',
       detail: `비용지급확인서 예금주(${paymentAccountHolder})와 통장사본 예금주(${bankbookAccountHolder})가 다릅니다.`,
       fieldKey: 'account_holder',
+      cluster: 'bank_account',
     });
   }
 
@@ -380,17 +485,80 @@ export function evaluatePaymentEvidenceCase(paymentCase) {
       label: '지급금액 불일치',
       detail: `예상 지급액 ${Number(paymentCase.expectedAmount || 0).toLocaleString()}원과 확인서 금액 ${paymentAmount.toLocaleString()}원이 다릅니다.`,
       fieldKey: 'amount',
+      cluster: 'payment',
     });
   }
 
   const blockerCount = issues.filter((issue) => issue.severity === 'blocker').length;
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
+  const documentTypeEvidence = PAYMENT_EVIDENCE_DOCUMENT_TYPES.map((type) => {
+    const document = documentByType(paymentCase, type);
+    const predictedType = normalizeKnownDocumentType(document?.ocrPredictedDocumentType);
+    const status = !document
+      ? 'missing'
+      : predictedType && predictedType !== type
+        ? 'mismatched'
+        : 'present';
+    return evidenceFact(
+      type,
+      PAYMENT_EVIDENCE_DOCUMENT_LABELS[type],
+      predictedType ? PAYMENT_EVIDENCE_DOCUMENT_LABELS[predictedType] : document?.fileName,
+      {
+        expectedValue: PAYMENT_EVIDENCE_DOCUMENT_LABELS[type],
+        fileName: document?.fileName || '',
+        status,
+      },
+    );
+  });
+  const validationClusters = [
+    buildValidationCluster({
+      id: 'document_type',
+      evidence: documentTypeEvidence,
+      issues,
+    }),
+    buildValidationCluster({
+      id: 'identity',
+      evidence: identityEvidence,
+      issues,
+    }),
+    buildValidationCluster({
+      id: 'resident_registration_number',
+      evidence: [
+        evidenceFact('payment_confirmation.resident_registration_number', '확인서 주민번호', paymentRrn),
+        evidenceFact('id_card.resident_registration_number', '신분증 주민번호', idRrn),
+      ],
+      issues,
+    }),
+    buildValidationCluster({
+      id: 'bank_account',
+      evidence: [
+        evidenceFact('payment_confirmation.bank', '확인서 은행', fieldValue(paymentDocument, 'bank')),
+        evidenceFact('bankbook.bank', '통장 은행', fieldValue(bankbookDocument, 'bank')),
+        evidenceFact('payment_confirmation.account_number', '확인서 계좌번호', paymentAccountNumber),
+        evidenceFact('bankbook.account_number', '통장 계좌번호', bankbookAccountNumber),
+        evidenceFact('payment_confirmation.account_holder', '확인서 예금주', paymentAccountHolder),
+        evidenceFact('bankbook.account_holder', '통장 예금주', bankbookAccountHolder),
+      ],
+      issues,
+    }),
+    buildValidationCluster({
+      id: 'payment',
+      evidence: [
+        evidenceFact('case.expected_amount', '요청 금액', paymentCase.expectedAmount),
+        evidenceFact('payment_confirmation.amount', '확인서 금액', fieldValue(paymentDocument, 'amount')),
+        evidenceFact('case.expected_income_type', '요청 소득구분', paymentCase.expectedIncomeType),
+        evidenceFact('payment_confirmation.income_type', '확인서 소득구분', fieldValue(paymentDocument, 'income_type')),
+      ],
+      issues,
+    }),
+  ];
 
   return {
     status: blockerCount > 0 ? 'blocked' : warningCount > 0 ? 'needs_review' : 'ready_to_approve',
     risk: blockerCount > 0 ? 'high' : warningCount > 0 ? 'medium' : 'low',
     issues,
     missingDocumentTypes,
+    validationClusters,
     fieldComparisons: [
       buildFieldComparison({
         key: 'name',

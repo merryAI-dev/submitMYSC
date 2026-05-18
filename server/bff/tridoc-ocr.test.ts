@@ -301,6 +301,57 @@ describe('payment evidence OCR consistency', () => {
     expect(consistency.issueCodes).toContain('missing_field:payment_confirmation:name');
   });
 
+  it('caps OCR consistency when identity evidence conflicts across documents', () => {
+    const consistency = computePaymentEvidenceOcrConsistency({
+      ...matchingCase,
+      documents: matchingCase.documents.map((document) => {
+        if (document.type === 'payment_confirmation') {
+          return { ...document, extractedFields: {}, validatedFields: {} };
+        }
+        if (document.type === 'id_card') {
+          return {
+            ...document,
+            extractedFields: {
+              ...document.extractedFields,
+              name: '이종휘',
+            },
+          };
+        }
+        if (document.type === 'bankbook') {
+          return {
+            ...document,
+            extractedFields: {
+              ...document.extractedFields,
+              account_holder: '강민지',
+            },
+          };
+        }
+        return document;
+      }),
+    });
+
+    expect(consistency.status).toBe('low_confidence');
+    expect(consistency.matched).toBe(false);
+    expect(consistency.matchProbability).toBeLessThanOrEqual(0.2);
+    expect(consistency.issueCodes).toContain('identity_mismatch');
+  });
+
+  it('caps OCR consistency when OCR predicted type conflicts with the selected slot', () => {
+    const consistency = computePaymentEvidenceOcrConsistency({
+      ...matchingCase,
+      documents: matchingCase.documents.map((document) => (
+        document.type === 'bankbook'
+          ? { ...document, ocrPredictedDocumentType: 'id_card' }
+          : document
+      )),
+    });
+
+    expect(consistency.status).toBe('low_confidence');
+    expect(consistency.matched).toBe(false);
+    expect(consistency.matchProbability).toBeLessThanOrEqual(0.4);
+    expect(consistency.issueCodes).toContain('document_type_mismatch:bankbook');
+  });
+
   it('applies OCR fields and metadata onto a payment evidence document', () => {
     const next = applyOcrResultToPaymentEvidenceDocument({
       id: 'doc-bank',

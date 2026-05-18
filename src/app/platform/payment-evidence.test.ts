@@ -154,6 +154,65 @@ describe('evaluatePaymentEvidenceCase', () => {
       expect.objectContaining({ key: 'account_number', matched: false, status: 'missing' }),
       expect.objectContaining({ key: 'account_holder', matched: false, status: 'missing' }),
     ]));
+    expect(result.validationClusters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'identity', status: 'needs_review' }),
+      expect.objectContaining({ id: 'resident_registration_number', status: 'needs_review' }),
+      expect.objectContaining({ id: 'bank_account', status: 'needs_review' }),
+      expect.objectContaining({ id: 'payment', status: 'needs_review' }),
+    ]));
+  });
+
+  it('requires review with low confidence when OCR says an uploaded document is in the wrong required slot', () => {
+    const result = evaluatePaymentEvidenceCase({
+      ...baseCase,
+      documents: baseCase.documents.map((doc) => (
+        doc.type === 'bankbook'
+          ? { ...doc, ocrPredictedDocumentType: 'id_card' }
+          : doc
+      )),
+    });
+
+    expect(result.status).toBe('needs_review');
+    expect(result.issues.map((issue) => issue.code)).toContain('document_type_mismatch:bankbook');
+    expect(result.validationClusters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'document_type', status: 'needs_review' }),
+    ]));
+  });
+
+  it('requires review with low confidence when identity evidence names disagree even if payment confirmation is incomplete', () => {
+    const result = evaluatePaymentEvidenceCase({
+      ...baseCase,
+      documents: baseCase.documents.map((doc) => {
+        if (doc.type === 'payment_confirmation') {
+          return { ...doc, extractedFields: {}, validatedFields: {} };
+        }
+        if (doc.type === 'id_card') {
+          return {
+            ...doc,
+            validatedFields: {
+              ...doc.validatedFields,
+              name: '이종휘',
+            },
+          };
+        }
+        if (doc.type === 'bankbook') {
+          return {
+            ...doc,
+            validatedFields: {
+              ...doc.validatedFields,
+              account_holder: '강민지',
+            },
+          };
+        }
+        return doc;
+      }),
+    });
+
+    expect(result.status).toBe('needs_review');
+    expect(result.issues.map((issue) => issue.code)).toContain('identity_mismatch');
+    expect(result.validationClusters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'identity', status: 'needs_review' }),
+    ]));
   });
 });
 

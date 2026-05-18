@@ -134,6 +134,81 @@ describe('payment evidence BFF domain', () => {
       expect.objectContaining({ key: 'account_number', matched: false, status: 'missing' }),
       expect.objectContaining({ key: 'account_holder', matched: false, status: 'missing' }),
     ]));
+    expect(result.validationClusters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'identity', status: 'needs_review' }),
+      expect.objectContaining({ id: 'resident_registration_number', status: 'needs_review' }),
+      expect.objectContaining({ id: 'bank_account', status: 'needs_review' }),
+      expect.objectContaining({ id: 'payment', status: 'needs_review' }),
+    ]));
+  });
+
+  it('requires review with low confidence when OCR says an uploaded document is in the wrong required slot', () => {
+    const result = evaluatePaymentEvidenceCase({
+      ...baseCase,
+      documents: baseCase.documents.map((document) => (
+        document.type === 'bankbook'
+          ? { ...document, ocrPredictedDocumentType: 'id_card' }
+          : document
+      )),
+    });
+
+    expect(result.status).toBe('needs_review');
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'document_type_mismatch:bankbook',
+        severity: 'warning',
+      }),
+    ]));
+    expect(result.validationClusters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'document_type',
+        status: 'needs_review',
+      }),
+    ]));
+  });
+
+  it('requires review with low confidence when identity evidence names disagree even if payment confirmation is incomplete', () => {
+    const result = evaluatePaymentEvidenceCase({
+      ...baseCase,
+      documents: baseCase.documents.map((document) => {
+        if (document.type === 'payment_confirmation') {
+          return { ...document, extractedFields: {}, validatedFields: {} };
+        }
+        if (document.type === 'id_card') {
+          return {
+            ...document,
+            validatedFields: {
+              ...document.validatedFields,
+              name: '이종휘',
+            },
+          };
+        }
+        if (document.type === 'bankbook') {
+          return {
+            ...document,
+            validatedFields: {
+              ...document.validatedFields,
+              account_holder: '강민지',
+            },
+          };
+        }
+        return document;
+      }),
+    });
+
+    expect(result.status).toBe('needs_review');
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'identity_mismatch',
+        severity: 'warning',
+      }),
+    ]));
+    expect(result.validationClusters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'identity',
+        status: 'needs_review',
+      }),
+    ]));
   });
 
   it('records rejection and returns the case to sent for reissue', () => {
